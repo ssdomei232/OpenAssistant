@@ -344,7 +344,7 @@ class AgentService:
                 online = bool(self.uploader.online)
             except Exception:  # pragma: no cover
                 online = False
-        return {
+        status = {
             "device_id": self.config.device_id,
             "wifi_connected": online,
             "queue": queue,
@@ -357,6 +357,12 @@ class AgentService:
             "segments_total": self.segments_total,
             "uploaded_total": self.uploaded_total,
         }
+        # 采集实时性指标（仅 SoundDeviceSource 提供；App/BLE STATUS 可展示）
+        source = self.source
+        if source is not None and hasattr(source, "overflow_count"):
+            status["audio_overflows"] = int(getattr(source, "overflow_count", 0))
+            status["audio_dropped_blocks"] = int(getattr(source, "dropped_blocks", 0))
+        return status
 
     def close(self) -> None:
         self._stop.set()

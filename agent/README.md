@@ -82,6 +82,35 @@ aplay /tmp/test.wav
   或在 `~/.asoundrc` / `pulseaudio` 中固定 16 kHz。
 - 若插拔后编号变化，Agent 按**设备名子串**匹配（`record.device`），不依赖固定编号；
   可用 `arecord -l` 查看确切的 `name`，必要时改成 `"DJI"` 这类更短的关键字。
+- 想用 48 kHz 录音时，先用 `arecord -D plughw:1,0 -f S16_LE -r 48000 -c 1 -d 10 /tmp/test48k.wav`
+  确认声卡支持，再把 `record.sample_rate` 设为 `48000` 并重启服务。
+
+### 2.3 录音实时性与 input overflow
+
+日志出现：
+
+```
+WARNING openassistant_agent.capture: audio input overflow: PortAudio reported N overflows ...
+```
+
+表示 ALSA/PortAudio 输入缓冲在某个时刻被填满、丢失了音频块（每块约 30ms）。
+Agent 采用**回调线程 + 有界队列 + 主线程 VAD** 的结构，回调只负责入队，通常不会溢出；
+若仍出现，按以下顺序排查：
+
+1. **加大缓冲**：`record.latency = "high"`（默认已是 high；可写 `0.3` 等秒数）
+   和 `record.input_queue_blocks = 64`，重启服务。
+2. **USB 供电/接触**：DJI 接收器插在树莓派 USB 口供电不足会中断；换**带电源的 USB Hub**，
+   `dmesg -w` 观察是否出现 USB 断连/重新枚举。
+3. **降低采样率**：48 kHz 的 CPU/带宽开销是 16 kHz 的 3 倍；树莓派 Zero/3 建议 16000。
+4. **减少系统抖动**：关闭 WiFi 省电 `sudo iw dev wlan0 set power_save off`；
+   `sudo cpufreq-set -g performance`（或 `raspi-config` 里调 governor）；
+   避免同时跑大量 CPU 任务；SD 卡写满/坏块也会造成卡顿。
+5. **ALSA 直连**：优先用 `plughw:` 设备而非 PulseAudio/PipeWire 默认源，减少重采样线程。
+6. **验证是否真的丢音**：`arecord -D plughw:1,0 -f S16_LE -r 48000 -c 1 -d 10 /tmp/t.wav`
+   若 `arecord` 也报 `overrun`，说明是系统/硬件层问题而非 Agent。
+
+偶发的单次 overflow 只会丢约 30ms 音频，不影响整体可用性；`status --json` 中的
+`audio_overflows` / `audio_dropped_blocks` 可观察趋势。
 - 树莓派 USB 供电不足会导致声卡掉线：使用带供电的 USB Hub 或官方电源。
 
 ### 2.3 部署代码与依赖
@@ -304,6 +333,7 @@ ble-serve   [--name OpenAssistant] [--adapter hci0] [--mock] [--duration N]
 环境变量覆盖示例：`OA_SERVER_URL`、`OA_API_KEY`、`OA_DEVICE_ID`、`OA_SPOOL_PATH`、
 `OA_VAD_AGGRESSIVENESS`、`OA_UPLOAD_RETRY_MAX`、`OA_UPLOAD_OFFLINE_BUFFER`、
 `OA_RECORD_DEVICE`、`OA_RECORD_SAMPLE_RATE`、`OA_RECORD_SOURCE`、`OA_RECORD_INPUT`、
+`OA_RECORD_LATENCY`、`OA_RECORD_INPUT_QUEUE_BLOCKS`、
 `OA_RETRY_MAX`、`OA_OFFLINE_BUFFER`。
 
 ---
@@ -312,7 +342,7 @@ ble-serve   [--name OpenAssistant] [--adapter hci0] [--mock] [--duration N]
 
 `POST {server_url}/api/v1/audio/segments`，`X-API-Key` 认证，`multipart/form-data`：
 
-- `file`：wav（mono，16 kHz）
+- `file`：wav（mono，8/16/32/48 kHz；默认 16 kHz）
 - `meta`：JSON 字符串
 
 ```json
@@ -346,6 +376,7 @@ ble-serve   [--name OpenAssistant] [--adapter hci0] [--mock] [--duration N]
 | `audio input device matching 'DJI Mic Mini' not found` | `arecord -l` 确认真实名称，修改 `record.device` 或改短关键字 |
 | 一直 `PortAudio: Device unavailable` / 掉线 | USB 供电不足；换 Hub/电源，`dmesg` 查看 USB 断连 |
 | 录到 48 kHz 数据或采样率报错 | 可直接把 `record.sample_rate` 设为 `48000`（支持 8/16/32/48 kHz）；也可用 `plughw:`、PulseAudio/PipeWire 重采样。Server 会自动把 48 kHz 转成 16 kHz 处理 |
+| `audio input overflow` 警告 | 见「2.3 录音实时性与 input overflow」：加大 `record.latency` / `record.input_queue_blocks`、换带电源 USB Hub、降低采样率、关闭 WiFi 省电 |
 | 上传/存储体积过大 | 48 kHz 体积约为 16 kHz 的 3 倍；把 `record.sample_rate` 改回 16000，或调小 `vad.max_segment_s` |
 | 队列一直 `pending` 且日志 offline | 检查 `server_url`、DNS、防火墙；`curl {server}/health`；恢复后自动补传 |
 | `401 invalid_api_key` | `api_key` 与 Server 不一致（注意 600 权限、无尾随空格） |

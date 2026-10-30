@@ -84,6 +84,10 @@ class RecordConfig:
     block_ms: int = 30
     source: str = "device"  # device | file | synthetic
     input_path: str = ""
+    # PortAudio/ALSA 缓冲：'high' 约 200ms，抗调度抖动；也可写秒数（如 0.2）
+    latency: str = "high"
+    # 回调线程 → 主线程的块队列长度（max 块数）。30ms/块时 32 块 ≈ 0.96s 余量
+    input_queue_blocks: int = 32
 
     @property
     def block_frames(self) -> int:
@@ -157,6 +161,8 @@ _ENV_MAP: dict[str, tuple[str | None, str]] = {
     "OA_RECORD_BLOCK_MS": ("record", "block_ms"),
     "OA_RECORD_SOURCE": ("record", "source"),
     "OA_RECORD_INPUT": ("record", "input_path"),
+    "OA_RECORD_LATENCY": ("record", "latency"),
+    "OA_RECORD_INPUT_QUEUE_BLOCKS": ("record", "input_queue_blocks"),
     "OA_VAD_AGGRESSIVENESS": ("vad", "aggressiveness"),
     "OA_VAD_FRAME_MS": ("vad", "frame_ms"),
     "OA_VAD_MIN_SPEECH_MS": ("vad", "min_speech_ms"),
@@ -340,6 +346,15 @@ class AgentConfig:
             raise ConfigError("record.source must be device|file|synthetic")
         if self.record.source == "file" and not self.record.input_path:
             raise ConfigError("record.input_path is required for file source")
+        if str(self.record.latency).strip().lower() not in ("low", "high"):
+            try:
+                latency_s = float(str(self.record.latency).strip())
+            except (TypeError, ValueError) as exc:
+                raise ConfigError("record.latency must be 'low'|'high' or seconds (0.01..5)") from exc
+            if not (0.01 <= latency_s <= 5.0):
+                raise ConfigError("record.latency seconds must be within 0.01..5")
+        if not (2 <= int(self.record.input_queue_blocks) <= 2000):
+            raise ConfigError("record.input_queue_blocks must be within 2..2000")
         if not (0 <= self.vad.aggressiveness <= 3):
             raise ConfigError("vad.aggressiveness must be within 0..3")
         if self.vad.frame_ms not in (10, 20, 30):

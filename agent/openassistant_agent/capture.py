@@ -19,7 +19,9 @@ from __future__ import annotations
 import io
 import logging
 import math
+import queue
 import struct
+import time
 import wave
 from array import array
 from dataclasses import dataclass
@@ -395,8 +397,68 @@ class SyntheticSource(AudioSource):
 # ---------------------------------------------------------------------------
 
 
+class _BlockBuffer:
+    """采集回调 → 主循环的定长块队列。
+
+    回调线程只做 ``put``（极快），主线程做 VAD/切片；队列满时丢弃最旧块，
+    优先保证实时性并累计丢弃数量（用于诊断 ALSA/USB 抖动）。
+    """
+
+    def __init__(self, max_blocks: int) -> None:
+        if max_blocks < 1:
+            raise AudioSourceError("input_queue_blocks must be >= 1")
+        self.capacity = int(max_blocks)
+        self.dropped = 0
+        self.closed = False
+        self._queue: "queue.Queue[bytes]" = queue.Queue(maxsize=self.capacity)
+
+    def put(self, block: bytes) -> None:
+        while True:
+            try:
+                self._queue.put_nowait(block)
+                return
+            except queue.Full:
+                try:
+                    self._queue.get_nowait()
+                    self.dropped += 1
+                except queue.Empty:  # pragma: no cover - 竞争窗口极小
+                    pass
+
+    def get(self, timeout: float = 0.5) -> bytes | None:
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self.closed = True
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+
+
+def _parse_latency(value: object) -> str | float:
+    """'low' / 'high' 或秒数 → sounddevice 的 latency 参数。"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value or "").strip().lower()
+    if text in ("low", "high"):
+        return text
+    try:
+        return float(text)
+    except ValueError:
+        return "high"
+
+
 class SoundDeviceSource(AudioSource):
     """通过 ``sounddevice`` 从 USB 麦克风（DJI Mic Mini）采集。
+
+    采用 **回调模式**：PortAudio 音频线程只把块放进有界队列
+    （:class:`_BlockBuffer`），VAD/切片在主线程执行。相比在主线程直接
+    ``stream.read()``，即使切片/GC 偶发抖动，ALSA 缓冲也能被及时排空，
+    显著减少 ``audio input overflow``。
 
     ``sounddevice`` 只在 :meth:`open` 时导入，缺少依赖时抛
     :class:`AudioSourceError`。设备名按子串、大小写不敏感匹配。
@@ -408,12 +470,48 @@ class SoundDeviceSource(AudioSource):
         sample_rate: int = 16000,
         channels: int = 1,
         block_ms: int = 30,
+        *,
+        latency: object = "high",
+        input_queue_blocks: int = 32,
     ) -> None:
         super().__init__(sample_rate=sample_rate, channels=channels, block_ms=block_ms)
         self.device = device
         self.device_index: int | None = None
+        self.latency = _parse_latency(latency)
+        self.queue_capacity = max(1, int(input_queue_blocks))
+        self._buffer = _BlockBuffer(self.queue_capacity)
         self._stream = None
         self._sd = None
+        self.overflow_count = 0
+        self.dropped_blocks = 0
+        self._last_overflow_log = 0.0
+        self._last_overflow_count = 0
+        self._last_dropped = 0
+
+    # -- 回调 ------------------------------------------------------------
+    def _on_audio(self, indata: object, frames: int, time_info: object, status: object) -> None:
+        if status is not None and getattr(status, "input_overflow", False):
+            self.overflow_count += 1
+            self._maybe_log_overflow()
+        try:
+            self._buffer.put(bytes(indata))  # type: ignore[arg-type]
+        except Exception:  # pragma: no cover - 回调内不能抛异常
+            logger.debug("failed to enqueue audio block", exc_info=True)
+
+    def _maybe_log_overflow(self) -> None:
+        now = time.monotonic()
+        if now - self._last_overflow_log < 10.0:
+            return
+        self._last_overflow_log = now
+        new_overflows = self.overflow_count - self._last_overflow_count
+        self._last_overflow_count = self.overflow_count
+        self._last_dropped = self.dropped_blocks
+        logger.warning(
+            "audio input overflow: PortAudio reported %s overflows in last 10s "
+            "(these blocks are lost). Try record.latency='high', larger "
+            "record.input_queue_blocks, a powered USB hub, or a lower sample_rate.",
+            new_overflows,
+        )
 
     def _resolve_device(self, sd: object) -> int | None:
         if isinstance(self.device, int):
@@ -469,6 +567,7 @@ class SoundDeviceSource(AudioSource):
             ) from exc
         self._sd = sd
         self.device_index = self._resolve_device(sd)
+        self._buffer = _BlockBuffer(self.queue_capacity)
         try:
             stream = sd.RawInputStream(
                 samplerate=self.sample_rate,
@@ -476,6 +575,8 @@ class SoundDeviceSource(AudioSource):
                 device=self.device_index,
                 channels=self.channels,
                 dtype="int16",
+                latency=self.latency,
+                callback=self._on_audio,
             )
             stream.start()
         except Exception as exc:  # pragma: no cover - 需要真实声卡
@@ -483,22 +584,25 @@ class SoundDeviceSource(AudioSource):
         self._stream = stream
 
     def read_block(self) -> bytes | None:
+        if self._buffer.closed:
+            return None
         if self._stream is None:
             self.open()
-        assert self._stream is not None
-        try:
-            data, overflowed = self._stream.read(self.block_frames)
-        except Exception as exc:  # pragma: no cover - 运行期设备错误
-            raise AudioSourceError(f"audio read failed: {exc}") from exc
-        if overflowed:  # pragma: no cover - 实时性告警
-            logger.warning("audio input overflow (block dropped by driver)")
-        if not data:
-            return None
-        return bytes(data)
+        while True:
+            block = self._buffer.get(timeout=0.5)
+            if block is not None:
+                self.dropped_blocks = self._buffer.dropped
+                return block
+            if self._buffer.closed or self._stream is None:
+                return None
+            if not getattr(self._stream, "active", True):
+                logger.warning("audio input stream is no longer active")
+                return None
 
     def close(self) -> None:
         stream = self._stream
         self._stream = None
+        self._buffer.close()
         if stream is not None:
             try:
                 stream.stop()
@@ -542,6 +646,8 @@ def create_source(
             sample_rate=sample_rate,
             channels=channels,
             block_ms=block_ms,
+            latency=getattr(record, "latency", "high"),
+            input_queue_blocks=int(getattr(record, "input_queue_blocks", 32)),
         )
     raise AudioSourceError(f"unknown audio source: {kind}")
 

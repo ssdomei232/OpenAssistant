@@ -32,6 +32,12 @@ block_ms = 30
 source = "device"
 # source = "file" 时使用的 wav 路径
 input_path = ""
+# PortAudio/ALSA 缓冲：'high'（约 200ms）抗调度抖动，树莓派推荐保持；
+# 也可写秒数，如 0.2。若频繁出现 "audio input overflow"，可改用更大值或检查 USB 供电。
+latency = "high"
+# 采集回调队列长度（块数）：30ms/块 × 32 ≈ 0.96s 余量。
+# 队列满时会丢弃最旧的块以保证实时性（丢弃数量记录在 status.audio_dropped_blocks）。
+input_queue_blocks = 32
 
 # --- VAD 与切片 -------------------------------------------------------------
 [vad]

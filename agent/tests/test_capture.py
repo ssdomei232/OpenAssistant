@@ -1,10 +1,11 @@
-"""音频采集：合成源、wav 回放（含重采样/降混）、工厂降级。"""
+"""音频采集：合成源、wav 回放（含重采样/降混）、回调队列与工厂降级。"""
 
 from __future__ import annotations
 
 import math
 import struct
 import wave
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +13,10 @@ from openassistant_agent.capture import (
     AudioSource,
     AudioSourceError,
     FileSource,
+    SoundDeviceSource,
     SyntheticSource,
+    _BlockBuffer,
+    _parse_latency,
     create_source,
     iter_frames,
     pcm16_to_wav_bytes,
@@ -21,6 +25,44 @@ from openassistant_agent.capture import (
 from openassistant_agent.config import AgentConfig
 
 from .helpers import SAMPLE_RATE, wav_bytes
+
+
+def test_block_buffer_drops_oldest_when_full():
+    buffer = _BlockBuffer(2)
+    buffer.put(b"a")
+    buffer.put(b"b")
+    buffer.put(b"c")  # 队列已满，丢弃最旧的 a
+    assert buffer.dropped == 1
+    assert buffer.get(0.05) == b"b"
+    assert buffer.get(0.05) == b"c"
+    assert buffer.get(0.05) is None
+
+
+def test_sounddevice_callback_enqueues_and_counts_overflow():
+    source = SoundDeviceSource(input_queue_blocks=2)
+    source._on_audio(b"\x00\x00" * 8, 8, None, SimpleNamespace(input_overflow=True))
+    source._on_audio(b"\x01\x00" * 8, 8, None, SimpleNamespace(input_overflow=False))
+    assert source.overflow_count == 1
+    assert source._buffer.get(0.05) == b"\x00\x00" * 8
+    assert source._buffer.get(0.05) == b"\x01\x00" * 8
+    source.close()
+    assert source.read_block() is None
+
+
+def test_sounddevice_read_block_from_queue():
+    source = SoundDeviceSource(input_queue_blocks=2)
+    source._stream = SimpleNamespace(active=True)
+    source._buffer.put(b"x" * 16)
+    assert source.read_block() == b"x" * 16
+    source.close()
+
+
+def test_parse_latency():
+    assert _parse_latency("high") == "high"
+    assert _parse_latency("LOW") == "low"
+    assert _parse_latency("0.2") == pytest.approx(0.2)
+    assert _parse_latency(0.1) == pytest.approx(0.1)
+    assert _parse_latency("bogus") == "high"
 
 
 def test_synthetic_source_streams_blocks():
