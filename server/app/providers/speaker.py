@@ -114,22 +114,42 @@ class PyAnnoteEmbedding:
         kwargs: dict[str, object] = {}
         if self.hf_token:
             kwargs["token" if use_token else "use_auth_token"] = self.hf_token
-        try:
-            model = Model.from_pretrained(self.model_name, **kwargs)
-        except TypeError as exc:
-            message = str(exc)
-            if self.hf_token and "unexpected keyword argument" in message:
-                alternate = "use_auth_token" if use_token else "token"
-                try:
-                    model = Model.from_pretrained(self.model_name, **{alternate: self.hf_token})
-                except Exception as retry_exc:  # noqa: BLE001
-                    raise RuntimeError(self._embedding_help(retry_exc)) from retry_exc
-            else:
-                raise RuntimeError(self._embedding_help(exc)) from exc
-        except Exception as exc:  # noqa: BLE001 - HF 错误类型随版本变化
-            raise RuntimeError(self._embedding_help(exc)) from exc
+
+        candidates = [self.model_name]
+        # pyannote 4 推荐 wespeaker；pyannote/embedding 是旧模型且可能需要 omegaconf
+        if "wespeaker" not in self.model_name:
+            candidates.append("pyannote/wespeaker-voxceleb-resnet34-LM")
+        errors: list[str] = []
+        model = None
+        for candidate in dict.fromkeys(candidates):
+            try:
+                model = Model.from_pretrained(candidate, **kwargs)
+            except TypeError as exc:
+                message = str(exc)
+                if self.hf_token and "unexpected keyword argument" in message:
+                    alternate = "use_auth_token" if use_token else "token"
+                    try:
+                        model = Model.from_pretrained(candidate, **{alternate: self.hf_token})
+                    except Exception as retry_exc:  # noqa: BLE001
+                        errors.append(f"{candidate}: {type(retry_exc).__name__}: {retry_exc}")
+                        continue
+                else:
+                    errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                    continue
+            except Exception as exc:  # noqa: BLE001 - HF 错误类型随版本变化
+                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                continue
+            if model is not None:
+                self.model_name = candidate
+                break
+            errors.append(f"{candidate}: Model.from_pretrained returned None")
+
         if model is None:
-            raise RuntimeError(self._embedding_help(None))
+            raise RuntimeError(
+                self._embedding_help(RuntimeError("; ".join(errors)))
+            )
+        self._inference = Inference(model, window="whole")
+        return self._inference
         self._inference = Inference(model, window="whole")
         return self._inference
 

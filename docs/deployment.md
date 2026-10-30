@@ -69,6 +69,16 @@ python -c "from app.config import get_settings; from pyannote.audio import Pipel
    `/health` 的 mode 变为 `energy(fallback)` / `spectral(fallback)`，不会每段都失败；
    修复授权并重启后自动恢复 pyannote。
 
+若看到 `ModuleNotFoundError: No module named 'omegaconf'`（pyannote.audio 4.x 常见）：
+
+```bash
+python -m pip install --user omegaconf
+# 或安装完整 AI 依赖：pip install -r server/requirements-ai.txt
+```
+
+> embedding 模型默认 `pyannote/embedding`；若它加载失败，代码会自动尝试 pyannote 4
+> 推荐的公开模型 `pyannote/wespeaker-voxceleb-resnet34-LM`（可通过 `OA_EMBEDDING_MODEL` 指定）。
+
 pyannote.audio 4.x 也可用新模型（同样需要授权）：
 `OA_DIARIZATION_MODEL=pyannote/speaker-diarization-community-1`。
 

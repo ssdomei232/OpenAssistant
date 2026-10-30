@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
-ai = ["faster-whisper>=1.0.3", "torch>=2.3", "torchaudio>=2.3", "pyannote.audio>=3.1.1"]
+ai = ["faster-whisper>=1.0.3", "torch>=2.3", "torchaudio>=2.3", "pyannote.audio>=3.1.1", "omegaconf>=2.3"]
 
 [project.scripts]
 openassistant-server = "app.cli:main"

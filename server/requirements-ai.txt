@@ -10,6 +10,9 @@ faster-whisper>=1.0.3
 torch>=2.3
 torchaudio>=2.3
 pyannote.audio>=3.1.1
+# pyannote.audio 4.x 加载旧版 checkpoint（pyannote/embedding 等）需要 omegaconf，
+# 但它不在 pyannote 4 的依赖声明里，必须显式安装，否则报 ModuleNotFoundError: omegaconf
+omegaconf>=2.3
 
 # pyannote 模型下载需要 HuggingFace token（OA_HF_TOKEN）
 # 首次运行会自动下载 pyannote/speaker-diarization-3.1 与 pyannote/embedding

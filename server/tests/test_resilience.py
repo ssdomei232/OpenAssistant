@@ -114,6 +114,36 @@ def test_pyannote_diarizer_uses_token_and_returns_segments(monkeypatch):
     assert segments[0].end == 1.5
 
 
+def test_embedding_falls_back_to_wespeaker(monkeypatch):
+    pytest.importorskip("pyannote.audio")
+
+    from app.providers import speaker as speaker_module
+
+    import pyannote.audio as pa  # type: ignore
+
+    calls: list[str] = []
+
+    def fake_from_pretrained(name, **kwargs):
+        calls.append(name)
+        if name == "pyannote/embedding":
+            raise RuntimeError("No module named 'omegaconf'")
+        return object()
+
+    class _FakeInference:
+        def __init__(self, model, window=None):
+            self.model = model
+            self.window = window
+
+    monkeypatch.setattr(pa.Model, "from_pretrained", staticmethod(fake_from_pretrained))
+    monkeypatch.setattr(pa, "Inference", _FakeInference)
+
+    embedding = speaker_module.PyAnnoteEmbedding(hf_token="hf_test", model="pyannote/embedding")
+    inference = embedding._load()
+    assert isinstance(inference, _FakeInference)
+    assert calls == ["pyannote/embedding", "pyannote/wespeaker-voxceleb-resnet34-LM"]
+    assert embedding.model_name == "pyannote/wespeaker-voxceleb-resnet34-LM"
+
+
 def test_pyannote_load_error_has_actionable_message(monkeypatch):
     pytest.importorskip("pyannote.audio")
     pytest.importorskip("torch")

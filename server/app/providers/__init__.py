@@ -60,6 +60,14 @@ def _pyannote_ready(settings: Settings) -> bool:
     if not settings.hf_token:
         logger.info("pyannote.audio is installed but OA_HF_TOKEN is empty; using offline fallback")
         return False
+    # pyannote.audio 4 加载旧版 embedding/segmentation checkpoint 依赖 omegaconf，
+    # 但它不在 pyannote 4 声明的依赖里；缺失时给出明确提示。
+    if not _try("omegaconf"):
+        logger.warning(
+            "pyannote.audio is installed but 'omegaconf' is missing; pyannote model "
+            "loading will fail with ModuleNotFoundError. Install it: "
+            "python -m pip install --user omegaconf"
+        )
     return True
 
 
