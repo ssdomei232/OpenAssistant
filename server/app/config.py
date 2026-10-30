@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
     hf_token: str = ""  # pyannote model download token
+    diarization_model: str = "pyannote/speaker-diarization-3.1"
+    embedding_model: str = "pyannote/embedding"
 
     # LLM (DeepSeek / any OpenAI-compatible endpoint)
     llm_base_url: str = "https://api.deepseek.com/v1"

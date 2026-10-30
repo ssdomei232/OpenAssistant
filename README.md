@@ -124,6 +124,11 @@ python -m app                              # 或 systemd / docker compose
 
 完整步骤（HTTPS、Nginx、钉钉机器人、定时任务、备份）见 [`docs/deployment.md`](docs/deployment.md)。
 
+> **pyannote 模型授权**：说话人分离 / 声纹模型是 HuggingFace gated 仓库，需要先用
+> `OA_HF_TOKEN` 对应账号在网页上接受使用条件，否则会 403。即使未授权，服务也会在
+> 首次失败后自动降级为 energy/spectral（`/health` 显示 `energy(fallback)`），不会中断录音处理；
+> 详见 deployment 文档 1.2.1。
+
 ## 测试
 
 ```bash

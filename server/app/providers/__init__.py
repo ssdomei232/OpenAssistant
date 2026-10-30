@@ -10,6 +10,7 @@ from .asr import FasterWhisperASR, MockASR
 from .diarization import EnergyDiarizer, PyAnnoteDiarizer
 from .llm import OpenAICompatibleLLM, RuleBasedLLM
 from .push import DingTalkPush, NullPush
+from .resilience import ResilientDiarizer, ResilientEmbedding
 from .search import BuiltinSearchProvider, DeepSeekSearchProvider, StaticSearchProvider
 from .speaker import PyAnnoteEmbedding, SpectralEmbedding
 
@@ -88,7 +89,11 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
     if want == "pyannote" and not _pyannote_ready(settings):
         logger.warning("pyannote requested but unavailable (missing package or OA_HF_TOKEN); using energy diarizer")
     if want in ("auto", "pyannote") and _pyannote_ready(settings):
-        diarization = PyAnnoteDiarizer(settings.hf_token)
+        diarization = ResilientDiarizer(
+            PyAnnoteDiarizer(settings.hf_token, settings.diarization_model),
+            EnergyDiarizer(),
+            modes,
+        )
         modes["diarization"] = "pyannote"
     else:
         diarization = EnergyDiarizer()
@@ -100,7 +105,11 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
     if want == "pyannote" and not _pyannote_ready(settings):
         logger.warning("pyannote embedding requested but unavailable (missing package or OA_HF_TOKEN); using spectral")
     if want in ("auto", "pyannote") and _pyannote_ready(settings):
-        speaker = PyAnnoteEmbedding(settings.hf_token)
+        speaker = ResilientEmbedding(
+            PyAnnoteEmbedding(settings.hf_token, settings.embedding_model),
+            SpectralEmbedding(),
+            modes,
+        )
         modes["speaker"] = "pyannote-embedding"
     else:
         speaker = SpectralEmbedding()

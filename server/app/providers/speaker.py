@@ -6,6 +6,9 @@ configured threshold (default 60).  Everything else is ``other`` - or
 """
 from __future__ import annotations
 
+import os
+import tempfile
+import wave
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -102,21 +105,71 @@ class PyAnnoteEmbedding:
         self._inference = None
 
     def _load(self):
+        import inspect
+
         from pyannote.audio import Inference, Model  # type: ignore
 
+        params = inspect.signature(Model.from_pretrained).parameters
+        use_token = "token" in params or "use_auth_token" not in params
+        kwargs: dict[str, object] = {}
+        if self.hf_token:
+            kwargs["token" if use_token else "use_auth_token"] = self.hf_token
         try:
-            model = Model.from_pretrained(self.model_name, token=self.hf_token or None)
-        except TypeError:  # pyannote.audio < 4
-            model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token or None)
+            model = Model.from_pretrained(self.model_name, **kwargs)
+        except TypeError as exc:
+            message = str(exc)
+            if self.hf_token and "unexpected keyword argument" in message:
+                alternate = "use_auth_token" if use_token else "token"
+                try:
+                    model = Model.from_pretrained(self.model_name, **{alternate: self.hf_token})
+                except Exception as retry_exc:  # noqa: BLE001
+                    raise RuntimeError(self._embedding_help(retry_exc)) from retry_exc
+            else:
+                raise RuntimeError(self._embedding_help(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - HF 错误类型随版本变化
+            raise RuntimeError(self._embedding_help(exc)) from exc
+        if model is None:
+            raise RuntimeError(self._embedding_help(None))
         self._inference = Inference(model, window="whole")
         return self._inference
+
+    def _embedding_help(self, exc: Exception | None) -> str:
+        detail = f"{type(exc).__name__}: {exc}" if exc is not None else "Model.from_pretrained returned None"
+        return (
+            f"无法加载 pyannote 声纹模型 {self.model_name!r}：{detail}。"
+            f"如果提示 gated/403，请用同一 HuggingFace 账号访问 "
+            f"https://hf.co/{self.model_name} 接受使用条件，并确认 OA_HF_TOKEN 正确；"
+            "也可以设置 OA_SPEAKER_PROVIDER=spectral 使用离线谱特征。"
+        )
+
+    def _temp_wav(self, samples: np.ndarray, sr: int) -> str:
+        fd, path = tempfile.mkstemp(suffix=".wav", prefix="oa-emb-")
+        os.close(fd)
+        pcm = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
+        with wave.open(path, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(int(sr))
+            wf.writeframes((pcm * 32767.0).astype("<i2").tobytes())
+        return path
 
     def embed(self, samples: np.ndarray, sr: int) -> list[float]:
         import torch  # type: ignore
 
         inference = self._inference or self._load()
         waveform = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0)
-        embedding = inference({"waveform": waveform, "sample_rate": sr})
+        try:
+            embedding = inference({"waveform": waveform, "sample_rate": sr})
+        except (TypeError, ValueError):
+            # pyannote 4 只保证文件路径输入：写临时 wav 兜底
+            path = self._temp_wav(samples, sr)
+            try:
+                embedding = inference(path)
+            finally:
+                try:
+                    os.unlink(path)
+                except OSError:  # pragma: no cover
+                    pass
         vector = np.asarray(embedding, dtype=np.float64).reshape(-1)
         norm = np.linalg.norm(vector)
         return (vector / norm).tolist() if norm else vector.tolist()

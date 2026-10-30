@@ -46,6 +46,32 @@ OA_DINGTALK_SECRET=<钉钉加签密钥，可选>
 > 首次启动 faster-whisper / pyannote 会下载模型（large-v3-turbo ≈ 1.6GB，
 > pyannote 相关模型合计 ≈ 1GB）。离线部署请提前在 GPU 主机缓存。
 
+### 1.2.1 HuggingFace 模型授权（pyannote 必读）
+
+pyannote 的说话人分离与声纹模型是 **gated 仓库**，仅有 token 不够，必须用同一个
+HuggingFace 账号打开以下页面并接受使用条件：
+
+- https://hf.co/pyannote/speaker-diarization-3.1
+- https://hf.co/pyannote/segmentation-3.0
+- https://hf.co/pyannote/embedding
+
+授权生效后（通常几分钟内）重启 Server。验证：
+
+```bash
+python -c "from app.config import get_settings; from pyannote.audio import Pipeline; s=get_settings(); print(bool(Pipeline.from_pretrained(s.diarization_model, token=s.hf_token)))"
+```
+
+若看到 `403 GatedRepoError` / `not in the authorized list`：
+
+1. 确认 `.env` 的 `OA_HF_TOKEN` 属于已授权账号；
+2. 或先用离线方案跑通：`OA_DIARIZATION_PROVIDER=energy`、`OA_SPEAKER_PROVIDER=spectral`；
+3. 代码内置**运行时降级**：真实 provider 首次失败后自动回退 energy/spectral，
+   `/health` 的 mode 变为 `energy(fallback)` / `spectral(fallback)`，不会每段都失败；
+   修复授权并重启后自动恢复 pyannote。
+
+pyannote.audio 4.x 也可用新模型（同样需要授权）：
+`OA_DIARIZATION_MODEL=pyannote/speaker-diarization-community-1`。
+
 ### 1.3 创建用户与 API Key
 
 ```bash

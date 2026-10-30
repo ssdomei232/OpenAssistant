@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 
 import numpy as np
 
 from .types import ASRResult, ASRWord
+
+logger = logging.getLogger(__name__)
 
 # A small deterministic corpus used by MockASR so the whole pipeline (cards,
 # schedule extraction, commands, meetings) is demoable on machines without a
@@ -142,9 +145,25 @@ class FasterWhisperASR:
     def _load(self):
         from faster_whisper import WhisperModel  # type: ignore
 
-        self._model = WhisperModel(
-            self.model_size, device=self.device, compute_type=self.compute_type
-        )
+        try:
+            self._model = WhisperModel(
+                self.model_size, device=self.device, compute_type=self.compute_type
+            )
+        except Exception as exc:  # noqa: BLE001 - CUDA/驱动/模型下载错误类型不定
+            if self.device == "cpu":
+                raise
+            logger.warning(
+                "faster-whisper failed on device=%s compute=%s (%s: %s); retrying on CPU int8. "
+                "安装 CUDA/cuDNN 或设置 OA_WHISPER_DEVICE=cpu 可避免该告警。",
+                self.device,
+                self.compute_type,
+                type(exc).__name__,
+                exc,
+            )
+            self.device = "cpu"
+            self.compute_type = "int8"
+            self.name = f"faster-whisper:{self.model_size}@cpu"
+            self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
         return self._model
 
     def transcribe(self, samples: np.ndarray, sr: int) -> ASRResult:

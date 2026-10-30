@@ -40,3 +40,8 @@ def test_pyannote_used_when_token_present(monkeypatch):
     built = providers_module.build_providers(settings)
     assert built.modes["diarization"] == "pyannote"
     assert built.modes["speaker"] == "pyannote-embedding"
+    # 真实 provider 外面包一层运行时降级，模型失败时自动回退
+    assert isinstance(built.diarization, providers_module.ResilientDiarizer)
+    assert isinstance(built.speaker, providers_module.ResilientEmbedding)
+    assert built.diarization.name == "pyannote"
+    assert built.speaker.name == "pyannote-embedding"
