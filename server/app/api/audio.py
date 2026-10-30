@@ -94,7 +94,8 @@ async def upload_segment(
         path=rel_path,
         sha256=digest,
         duration_s=round(duration, 3),
-        sample_rate=sr,
+        # 记录上传端原始采样率（内部 ASR/声纹统一重采样到 16 kHz）
+        sample_rate=int(meta_data.get("sample_rate") or sr),
         channels=int(meta_data.get("channels") or 1),
         status="queued",
         meta=meta_data,

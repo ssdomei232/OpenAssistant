@@ -104,7 +104,10 @@ class PyAnnoteEmbedding:
     def _load(self):
         from pyannote.audio import Inference, Model  # type: ignore
 
-        model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token or None)
+        try:
+            model = Model.from_pretrained(self.model_name, token=self.hf_token or None)
+        except TypeError:  # pyannote.audio < 4
+            model = Model.from_pretrained(self.model_name, use_auth_token=self.hf_token or None)
         self._inference = Inference(model, window="whole")
         return self._inference
 

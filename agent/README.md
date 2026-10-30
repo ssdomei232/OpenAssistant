@@ -3,7 +3,10 @@
 穿戴式录音端的完整实现：**采集 → VAD 切片 → 本地持久化队列 → HTTPS 上传**，
 并通过 **BLE GATT** 向 App 提供配置/状态/队列管理通道。
 
-- 只上传**含人声**的片段（16-bit mono 16 kHz wav）；
+- 只上传**含人声**的片段（16-bit mono wav；默认 16 kHz，可配置为 32/48 kHz）；
+- 采样率可配置为 8/16/32/48 kHz：VAD、切片、WAV、上传元数据都会按配置的采样率处理；
+  Server 收到后统一重采样到 16 kHz 供 ASR/声纹使用。48 kHz 可保留 DJI Mic Mini 原始音质，
+  但上传/存储体积约为 16 kHz 的 3 倍（60s 片段约 5.5 MB），弱网环境建议保持 16 kHz；
 - 断网自动暂存，恢复后按序补传（指数退避 + 抖动，幂等 `client_segment_id`）；
 - 断电重启不丢队列（SQLite；启动时把 `uploading` 对账回 `pending`）；
 - 所有第三方依赖可选：没有 `sounddevice`/`webrtcvad`/`httpx`/`bless` 时自动降级，
@@ -342,7 +345,8 @@ ble-serve   [--name OpenAssistant] [--adapter hci0] [--mock] [--duration N]
 | `sounddevice is not installed` | 安装 `sounddevice`，或在开发时用 `--source file/synthetic` |
 | `audio input device matching 'DJI Mic Mini' not found` | `arecord -l` 确认真实名称，修改 `record.device` 或改短关键字 |
 | 一直 `PortAudio: Device unavailable` / 掉线 | USB 供电不足；换 Hub/电源，`dmesg` 查看 USB 断连 |
-| 录到 48 kHz 数据或采样率报错 | 用 `plughw:`、PulseAudio/PipeWire 重采样，或只保留一种采样率配置 |
+| 录到 48 kHz 数据或采样率报错 | 可直接把 `record.sample_rate` 设为 `48000`（支持 8/16/32/48 kHz）；也可用 `plughw:`、PulseAudio/PipeWire 重采样。Server 会自动把 48 kHz 转成 16 kHz 处理 |
+| 上传/存储体积过大 | 48 kHz 体积约为 16 kHz 的 3 倍；把 `record.sample_rate` 改回 16000，或调小 `vad.max_segment_s` |
 | 队列一直 `pending` 且日志 offline | 检查 `server_url`、DNS、防火墙；`curl {server}/health`；恢复后自动补传 |
 | `401 invalid_api_key` | `api_key` 与 Server 不一致（注意 600 权限、无尾随空格） |
 | 上传一直 `failed` | `status --json` 查看 `last_error`；必要时 BLE `{"action":"retry"}` |

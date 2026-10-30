@@ -68,6 +68,8 @@ server/
 ### 2.2 处理管道（关键顺序）
 
 1. 入库：校验、幂等（`client_segment_id` 唯一）、落对象存储、状态 `queued`。
+   支持 8/16/32/48 kHz 单声道 wav（Agent 可用 DJI Mic Mini 原生 48 kHz），
+   Server 内部统一重采样到 16 kHz（降采样前做窗函数 sinc 低通抗混叠），ASR/声纹模型固定 16 kHz 输入。
 2. 分离：pyannote → 匿名区间 `SPEAKER_00..`；离线兜底用能量/静音切分为伪说话人。
 3. 声纹：对每个匿名说话人的音频算 embedding，与用户注册声纹余弦相似度 ×100 得 `similarity`；
    `similarity >= threshold(默认 60)` → `user`；有其他人声 → `other`；无法判定 → `unknown`。

@@ -20,6 +20,11 @@ log_level = "INFO"
 # USB 麦克风（DJI Mic Mini 的 UAC 声卡）名称子串，大小写不敏感；
 # 用 `arecord -l` 确认实际名称，如 "DJI Mic Mini" / "DJI_Mic_Mini"
 device = "DJI Mic Mini"
+# 采样率：8000 / 16000 / 32000 / 48000。
+# DJI Mic Mini 原生输出 48000 Hz；如果需要保留原始音质，可改为 48000：
+#   * VAD、切片、WAV 写入、上传元数据都会自动按 48 kHz 处理；
+#   * Server 收到后统一重采样到 16 kHz 供 faster-whisper / 声纹模型使用（带抗混叠滤波）；
+#   * 代价：上传/存储体积约为 16 kHz 的 3 倍（60s 片段约 5.5 MB），弱网环境不建议。
 sample_rate = 16000
 channels = 1
 block_ms = 30

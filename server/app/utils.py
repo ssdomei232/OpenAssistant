@@ -114,7 +114,7 @@ def decode_audio(data: bytes, target_sr: int = 16000) -> tuple[np.ndarray, int]:
     if samples.ndim > 1:
         samples = samples.mean(axis=1)
     if sr != target_sr:
-        samples = resample_linear(samples, sr, target_sr)
+        samples = resample_audio(samples, sr, target_sr)
         sr = target_sr
     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
     if peak > 0:
@@ -157,6 +157,44 @@ def _decode_soundfile(data: bytes) -> tuple[np.ndarray | None, int]:
         return np.asarray(samples), int(sr)
     except Exception:
         return None, 0
+
+
+def _lowpass_kernel(cutoff_hz: float, sample_rate: int, num_taps: int | None = None) -> np.ndarray:
+    """Windowed-sinc 低通 FIR，用于降采样前的抗混叠滤波。"""
+    cutoff_hz = min(cutoff_hz, sample_rate / 2.0 * 0.99)
+    if num_taps is None:
+        # 过渡带约 1/8 cutoff，Hamming 窗下约 50 dB 阻带
+        num_taps = int(round(8.0 * sample_rate / max(cutoff_hz, 1.0)))
+    num_taps = max(15, num_taps | 1)  # 奇数抽头保证线性相位
+    n = np.arange(num_taps) - (num_taps - 1) / 2.0
+    normalized_cutoff = cutoff_hz / sample_rate
+    kernel = 2.0 * normalized_cutoff * np.sinc(2.0 * normalized_cutoff * n) * np.hamming(num_taps)
+    total = kernel.sum()
+    return (kernel / total).astype(np.float64) if total else kernel
+
+
+def resample_audio(samples: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
+    """高质量重采样：降采样先做抗混叠低通再插值，升采样用线性插值。
+
+    典型场景：Agent 以 48 kHz 上传（DJI Mic Mini 原生采样率），Server 内部统一
+    转成 16 kHz 供 faster-whisper / 声纹模型使用。直接线性抽取会把 8 kHz 以上的
+    能量折叠到可听频段（混叠），因此这里先低通到目标 Nyquist 以下再抽取。
+    """
+    if sr == target_sr or samples.size == 0:
+        return samples.astype(np.float32, copy=False)
+    x = np.asarray(samples, dtype=np.float64)
+    if target_sr < sr:
+        # 留 10% 过渡带：cutoff 低于目标 Nyquist
+        cutoff = 0.45 * target_sr
+        kernel = _lowpass_kernel(cutoff, sr)
+        filtered = np.convolve(x, kernel, mode="same")
+        factor = sr / float(target_sr)
+        target_len = int(round(x.size * target_sr / float(sr)))
+        positions = np.arange(target_len, dtype=np.float64) * factor
+        out = np.interp(positions, np.arange(x.size, dtype=np.float64), filtered)
+        return out.astype(np.float32)
+    # 升采样：线性插值即可满足内部 16 kHz 处理需求
+    return resample_linear(x.astype(np.float32), sr, target_sr)
 
 
 def resample_linear(samples: np.ndarray, sr: int, target_sr: int) -> np.ndarray:

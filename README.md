@@ -56,7 +56,7 @@ OpenAssistant/
 | 多个称呼 | App 编辑 aliases，同步 Server 并进入提示词 |
 | 勘误与删除 | 卡片修订历史 + 审计日志；级联清理日程/待办/会议，重算画像；软删除可恢复 |
 | 会议纪要 | 多说话人长会话自动识别为会议，生成议题/决议/行动项/Markdown 纪要 |
-| Agent 录音端 | DJI Mic Mini USB 采集、VAD 切片、离线暂存、失败重传、BLE 管理通道 |
+| Agent 录音端 | DJI Mic Mini USB 采集、VAD 切片、离线暂存、失败重传、BLE 管理通道；采样率支持 8/16/32/48 kHz（48 kHz 保留麦克风原始采样，Server 抗混叠重采样到 16 kHz 供 ASR/声纹使用） |
 | App 手机端 | Material Design 3、底部 Tab、待办首页、日程、历史卡片详情（ASR 原文 + 录音下载）、会议、画像、设置、BLE 设备管理 |
 
 ## 快速开始（本地演示，无需 GPU / API Key）

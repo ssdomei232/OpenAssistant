@@ -105,7 +105,7 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 
 ### POST `/audio/segments`
 `multipart/form-data`：
-- `file`: 音频片段（wav，单声道，16k/48k 均可）
+- `file`: 音频片段（wav，单声道；支持 8/16/32/**48 kHz**，Server 内部统一重采样到 16 kHz 并做抗混叠滤波）
 - `meta`: JSON 字符串
 ```json
 {
@@ -113,7 +113,7 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
   "device_id": "pi-livingroom",
   "recorded_at": "2026-03-05T09:30:00+08:00",
   "duration_s": 42.5,
-  "sample_rate": 16000,
+  "sample_rate": 48000,
   "channels": 1,
   "sha256": "…",
   "vad": {"speech_ratio": 0.61, "segments": [[0.3, 8.2], [9.1, 40.0]]},
@@ -123,12 +123,15 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 - 幂等：同一 `client_segment_id` 重复上传返回已存在记录（HTTP 200，`duplicate: true`），不重复处理。
 - 响应 `202`：
 ```json
-{"id": "seg_01H...", "client_segment_id": "...", "status": "queued", "duplicate": false, "created_at": "..."}
+{"id": "seg_01H...", "client_segment_id": "...", "status": "queued", "duplicate": false,
+ "duration_s": 42.5, "sample_rate": 48000, "received_at": "..."}
 ```
 
 ### GET `/audio/segments/{id}`
 ```json
-{"id": "...", "status": "queued|processing|done|failed", "error": null, "card_id": "card_...", "received_at": "...", "processed_at": "..."}
+{"id": "...", "status": "queued|processing|done|failed", "error": null, "card_id": "card_...",
+ "duration_s": 42.5, "sample_rate": 48000, "channels": 1, "device_id": "pi-livingroom",
+ "received_at": "...", "processed_at": "..."}
 ```
 
 ### GET `/audio/segments`

@@ -115,7 +115,11 @@ class PyAnnoteDiarizer:
         import torch  # type: ignore
         from pyannote.audio import Pipeline  # type: ignore
 
-        pipeline = Pipeline.from_pretrained(self.model_name, use_auth_token=self.hf_token or None)
+        # pyannote.audio 3.x 使用 use_auth_token，4.x 改为 token（这里同时兼容）
+        try:
+            pipeline = Pipeline.from_pretrained(self.model_name, token=self.hf_token or None)
+        except TypeError:
+            pipeline = Pipeline.from_pretrained(self.model_name, use_auth_token=self.hf_token or None)
         if torch.cuda.is_available():
             pipeline.to(torch.device("cuda"))
         self._pipeline = pipeline

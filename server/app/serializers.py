@@ -74,6 +74,11 @@ def segment_out(segment: AudioSegment) -> dict:
         "error": segment.error,
         "card_id": segment.card_id,
         "duration_s": segment.duration_s,
+        # 上传端原始采样率（内部处理统一重采样到 16 kHz）
+        "sample_rate": segment.sample_rate,
+        "channels": segment.channels,
+        "device_id": segment.device_id,
+        "sha256": segment.sha256,
         "received_at": iso_utc(segment.received_at),
         "processed_at": iso_utc(segment.processed_at),
     }

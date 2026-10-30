@@ -52,8 +52,20 @@ def _try(import_path: str) -> bool:
         return False
 
 
+def _pyannote_ready(settings: Settings) -> bool:
+    """pyannote 模型是 gated 仓库：没有 HF token 时即使装了依赖也跑不起来。"""
+    if not (_try("pyannote.audio") and _try("torch")):
+        return False
+    if not settings.hf_token:
+        logger.info("pyannote.audio is installed but OA_HF_TOKEN is empty; using offline fallback")
+        return False
+    return True
+
+
 def build_providers(settings: Settings | None = None, *, force_mock: bool = False) -> Providers:
     settings = settings or get_settings()
+    # 演示 / 测试模式强制使用离线实现，避免已安装的 GPU 依赖在无 token / 无模型时拖慢或失败
+    force_mock = force_mock or settings.demo_mode
     modes: dict[str, str] = {}
 
     # ── ASR ───────────────────────────────────────────────────────────────
@@ -73,26 +85,26 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
     # ── diarization ───────────────────────────────────────────────────────
     diarization: Any
     want = "energy" if force_mock else settings.diarization_provider
-    if want in ("auto", "pyannote") and _try("pyannote.audio"):
+    if want == "pyannote" and not _pyannote_ready(settings):
+        logger.warning("pyannote requested but unavailable (missing package or OA_HF_TOKEN); using energy diarizer")
+    if want in ("auto", "pyannote") and _pyannote_ready(settings):
         diarization = PyAnnoteDiarizer(settings.hf_token)
         modes["diarization"] = "pyannote"
     else:
         diarization = EnergyDiarizer()
         modes["diarization"] = "energy"
-        if want == "pyannote":
-            logger.warning("pyannote.audio is not installed; falling back to energy diarization")
 
     # ── speaker embedding ─────────────────────────────────────────────────
     speaker: Any
     want = "spectral" if force_mock else settings.speaker_provider
-    if want in ("auto", "pyannote") and _try("pyannote.audio") and _try("torch"):
+    if want == "pyannote" and not _pyannote_ready(settings):
+        logger.warning("pyannote embedding requested but unavailable (missing package or OA_HF_TOKEN); using spectral")
+    if want in ("auto", "pyannote") and _pyannote_ready(settings):
         speaker = PyAnnoteEmbedding(settings.hf_token)
         modes["speaker"] = "pyannote-embedding"
     else:
         speaker = SpectralEmbedding()
         modes["speaker"] = "spectral"
-        if want == "pyannote":
-            logger.warning("pyannote.audio is not installed; falling back to spectral embeddings")
 
     # ── LLM ───────────────────────────────────────────────────────────────
     llm: Any
@@ -113,7 +125,7 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
             logger.warning("LLM API key missing; falling back to rule based extraction")
 
     # ── search ────────────────────────────────────────────────────────────
-    if force_mock or settings.demo_mode:
+    if force_mock:
         search_builtin: Any = StaticSearchProvider()
         modes["search"] = "static"
     else:
@@ -129,6 +141,9 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
         push = NullPush()
         modes["push"] = "null"
 
+    if force_mock:
+        modes["note"] = "demo/forced mock providers"
+    logger.info("provider modes: %s", modes)
     return Providers(
         asr=asr,
         diarization=diarization,
