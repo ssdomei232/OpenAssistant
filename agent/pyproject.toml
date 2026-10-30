@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openassistant-agent"
+version = "1.0.0"
+description = "OpenAssistant Agent：树莓派录音、VAD 切片、离线队列与 BLE 管理通道"
+requires-python = ">=3.10"
+dependencies = []  # 核心只用标准库；可选依赖见 requirements.txt
+
+[project.optional-dependencies]
+full = [
+    "numpy>=1.26",
+    "sounddevice>=0.4.6",
+    "httpx>=0.27",
+    "bless>=0.2.6",
+    "tomli>=2.0; python_version < '3.11'",
+    "webrtcvad-wheels>=2.0.14; platform_machine != 'armv7l'",
+]
+dev = ["pytest>=8", "numpy>=1.26"]
+
+[project.scripts]
+openassistant-agent = "openassistant_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["openassistant_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider -q"

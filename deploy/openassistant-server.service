@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenAssistant Server (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openassistant
+Group=openassistant
+WorkingDirectory=/opt/openassistant/server
+EnvironmentFile=/opt/openassistant/server/.env
+ExecStart=/opt/openassistant/venv/bin/python -m app
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+# GPU 主机上按需放开（faster-whisper / pyannote）
+# Environment=CUDA_VISIBLE_DEVICES=0
+# NoNewPrivileges=true
+# PrivateTmp=true
+# ProtectSystem=strict
+# ReadWritePaths=/opt/openassistant/server/data
+
+[Install]
+WantedBy=multi-user.target

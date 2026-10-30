@@ -1,0 +1,10 @@
+allowBuilds:
+  esbuild: false
+
+# 沙箱内 Node 的 ESM/CJS 解析对 Windows junction 支持不佳（pnpm 默认 symlink 布局），
+# 使用 npm 风格的扁平 node_modules，确保 Vite / Babel / rollup 能正确解析依赖。
+nodeLinker: hoisted
+
+# 非交互环境：允许重新生成 node_modules，且运行脚本前不自动做依赖校验安装。
+confirmModulesPurge: false
+verifyDepsBeforeRun: false

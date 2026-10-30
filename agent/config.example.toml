@@ -1,0 +1,71 @@
+# OpenAssistant Agent 配置示例
+# 部署路径：/etc/openassistant/agent.toml
+# 合并顺序：内置默认值 < 本文件 < 环境变量(OA_*) < 显式参数（含 BLE 写入）
+#
+# 说明：
+# * 采样率 / 声道 / 块大小改动后需重启服务；
+# * retry_max / offline_buffer / vad 可以通过 App BLE 随时修改并持久化；
+# * api_key 只保存在本机与 Server，不要提交到版本库。
+
+# --- 顶层 -------------------------------------------------------------------
+server_url = "https://assistant.example.com"
+api_key = "replace-with-your-api-key"
+device_id = "pi-livingroom"
+# 队列数据库、音频片段与日志目录；spool.db 位于该目录下
+spool_path = "/var/lib/openassistant"
+log_level = "INFO"
+
+# --- 录音 -------------------------------------------------------------------
+[record]
+# USB 麦克风（DJI Mic Mini 的 UAC 声卡）名称子串，大小写不敏感；
+# 用 `arecord -l` 确认实际名称，如 "DJI Mic Mini" / "DJI_Mic_Mini"
+device = "DJI Mic Mini"
+sample_rate = 16000
+channels = 1
+block_ms = 30
+# device：真实声卡；file：回放 wav（开发）；synthetic：合成音（自检）
+source = "device"
+# source = "file" 时使用的 wav 路径
+input_path = ""
+
+# --- VAD 与切片 -------------------------------------------------------------
+[vad]
+# 0..3，越大越保守（webrtcvad 直接使用；能量 VAD 映射为阈值系数）
+aggressiveness = 2
+# VAD 帧长，只支持 10 / 20 / 30 ms
+frame_ms = 30
+# 实际语音短于该值整段丢弃（不上传）
+min_speech_ms = 300
+# 静音超过该值才断句；同时决定“短静音合并”
+min_silence_ms = 500
+# 单段最长秒数，超出强制切分
+max_segment_s = 60.0
+# 语音前后保留的上下文
+preroll_s = 0.3
+postroll_s = 0.3
+# 能量 VAD 兜底参数：阈值 = max(absolute_floor, 噪声底 * energy_factor)
+energy_factor = 2.5
+absolute_floor = 120.0
+adaptive_noise = true
+
+# --- 上传与离线策略 ---------------------------------------------------------
+[upload]
+# 相对 server_url 的接口路径（契约：POST /api/v1/audio/segments）
+endpoint = "/api/v1/audio/segments"
+health_endpoint = "/health"
+# 失败重试：第 n 次失败等待 min(retry_base_s * 2^(n-1), retry_max_s) * 抖动
+retry_max = 5
+retry_base_s = 1.0
+retry_max_s = 300.0
+timeout_s = 30.0
+# 断网时是否本地缓存。true：无限缓存等待恢复；false + offline_policy="drop"：丢弃
+offline_buffer = true
+offline_policy = "keep"
+# 每批上传条数
+batch_size = 4
+
+# --- WiFi（App 通过 BLE CONFIG 写入；Agent 转发给 Server 备份） ---------------
+# 该表不参与 Agent 运行参数，仅作为示例展示 App 写入的 JSON 结构：
+# [wifi]
+# ssid = "home"
+# password = "******"

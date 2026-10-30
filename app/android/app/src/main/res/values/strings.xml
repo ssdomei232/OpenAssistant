@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OpenAssistant</string>
+    <string name="title_activity_main">OpenAssistant</string>
+    <string name="package_name">com.openassistant.app</string>
+    <string name="custom_url_scheme">com.openassistant.app</string>
+</resources>

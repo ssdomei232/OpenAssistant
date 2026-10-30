@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest-tmp/
+.pytest-cache/
+.pytest_cache/
+.openassistant-selftest/
+.cli-test/
+.selftest-probe/
+*.db
+*.db-wal
+*.db-shm
+segments/

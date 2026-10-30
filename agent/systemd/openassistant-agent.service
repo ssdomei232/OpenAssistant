@@ -1,0 +1,46 @@
+[Unit]
+Description=OpenAssistant Agent (Raspberry Pi recorder / VAD uploader)
+Documentation=https://github.com/openassistant/openassistant
+# 录音需要声卡就绪，BLE 需要 BlueZ；网络恢复后会自动补传，不强制等待
+After=network-online.target sound.target bluetooth.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openassistant
+Group=openassistant
+# 访问 USB 声卡需要 audio 组；bless/BlueZ 需要 bluetooth 组
+SupplementaryGroups=audio bluetooth
+EnvironmentFile=-/etc/openassistant/agent.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/openassistant/agent
+StateDirectory=openassistant
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/openassistant
+ExecStart=/opt/openassistant/venv/bin/python -m openassistant_agent \
+    --config /etc/openassistant/agent.toml \
+    --log-level INFO \
+    run
+# SIGTERM 由 AgentService 捕获：收尾当前片段、尽可能 flush 队列后退出
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+# 连续快速失败时也保持退避重启
+StartLimitIntervalSec=0
+
+# 基础加固：仅 /var/lib/openassistant 与 /run 可写
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/lib/openassistant
+# 允许 BlueZ / 声卡设备访问
+PrivateDevices=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openassistant-agent
+
+[Install]
+WantedBy=multi-user.target

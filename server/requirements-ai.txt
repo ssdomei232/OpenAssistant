@@ -1,0 +1,20 @@
+# OpenAssistant Server - GPU / 生产级 AI 依赖
+# 运行环境：RTX A4000 (16GB)；Python 3.10/3.11（torch 与 pyannote 的版本约束）
+# 安装：pip install -r requirements-ai.txt
+-r requirements.txt
+
+# ASR：faster-whisper（large-v3 / large-v3-turbo），需要 CUDA 12 + cuDNN 8/9
+faster-whisper>=1.0.3
+
+# 说话人分离 + 声纹 embedding
+torch>=2.3
+torchaudio>=2.3
+pyannote.audio>=3.1.1
+
+# pyannote 模型下载需要 HuggingFace token（OA_HF_TOKEN）
+# 首次运行会自动下载 pyannote/speaker-diarization-3.1 与 pyannote/embedding
+# 若离线部署，请提前在 GPU 主机缓存模型。
+
+# 可选：CAM++ 声纹（如果使用 modelscope / funasr 方案）
+# modelscope>=1.15
+# funasr>=1.1

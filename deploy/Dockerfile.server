@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# ffmpeg：音频解码兜底；libsndfile：soundfile
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY server/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
+
+COPY server/app ./app
+COPY server/pytest.ini ./pytest.ini
+
+RUN mkdir -p /app/data/storage /app/data && useradd -m openassistant && chown -R openassistant /app
+USER openassistant
+
+ENV OA_DATABASE_URL=sqlite:////app/data/openassistant.db \
+    OA_STORAGE_DIR=/app/data/storage \
+    OA_HOST=0.0.0.0 \
+    OA_PORT=8000
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
+    CMD curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1
+
+CMD ["python", "-m", "app"]

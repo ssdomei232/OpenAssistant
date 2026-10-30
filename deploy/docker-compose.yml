@@ -1,0 +1,37 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server
+    image: openassistant/server:1.0.0
+    container_name: openassistant-server
+    restart: unless-stopped
+    env_file:
+      - ../server/.env
+    environment:
+      OA_DATABASE_URL: sqlite:////app/data/openassistant.db
+      OA_STORAGE_DIR: /app/data/storage
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../server/data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # 可选：PostgreSQL（把 OA_DATABASE_URL 改成 postgresql+psycopg://... 后启用）
+  # postgres:
+  #   image: postgres:16-alpine
+  #   container_name: openassistant-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: openassistant
+  #     POSTGRES_PASSWORD: change-me
+  #     POSTGRES_DB: openassistant
+  #   volumes:
+  #     - openassistant-pgdata:/var/lib/postgresql/data
+
+# volumes:
+#   openassistant-pgdata:

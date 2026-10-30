@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.pytest-tmp/
+.coverage
+htmlcov/
+.deps/
+.wheels/
+.pipcache/
+.condapkgs/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+.pnpm-store/
+.pnpmstore/
+.pnpmhome/
+.npmcache/
+.vite/
+coverage/
+
+# Env / secrets
+.env
+server/.env
+!.env.example
+server/data/
+agent/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Audio / runtime artifacts
+server/data/storage/
+.tmp/
+*.wav
+!demo/**/*.wav
+
+# Dev sandbox artifacts (Windows ACL-locked temp dirs from tooling)
+.probe-root/
+.openassistant-selftest/
+pytest-cache-files-*/
+.pytest-tmp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Capacitor / native build outputs
+app/android/.gradle/
+app/android/app/build/
+app/android/build/
+app/android/local.properties
+app/android/app/src/main/assets/public/
+app/android/app/src/main/assets/capacitor.config.json
+app/android/app/src/main/assets/capacitor.plugins.json
+app/android/capacitor-cordova-android-plugins/
+app/ios/Pods/
+app/ios/App/App.xcworkspace/xcuserdata/
+app/ios/App/App/public/
+app/ios/App/Podfile.lock

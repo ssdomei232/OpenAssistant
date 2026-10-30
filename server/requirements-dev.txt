@@ -1,0 +1,4 @@
+# OpenAssistant Server - 开发/测试依赖
+-r requirements.txt
+pytest>=8
+pytest-asyncio>=0.24

@@ -1,0 +1,24 @@
+# OpenAssistant Agent（树莓派）Python 依赖
+#
+# 设计原则：所有第三方依赖都是可选的，缺失时 Agent 自动降级，不会 import 失败。
+# 生产部署建议全部安装；开发/测试环境可以只装 numpy。
+#
+# 安装：
+#   python -m venv /opt/openassistant/venv
+#   /opt/openassistant/venv/bin/pip install -r requirements.txt
+#
+# 树莓派 32 位系统（armv7l）注意：webrtcvad 需要编译，建议用
+# webrtcvad-wheels（仅提供 64 位 wheel）或在 64 位 Bookworm 上部署。
+
+# --- 录音（USB 麦克风 / DJI Mic Mini） --------------------------------------
+sounddevice>=0.4.6
+numpy>=1.24
+
+# --- VAD（优先 webrtcvad，缺失时用内置能量 VAD） ----------------------------
+webrtcvad-wheels>=2.0.14; platform_machine != "armv7l"
+
+# --- 上传（优先 httpx，缺失时用标准库 urllib） ------------------------------
+httpx>=0.27
+
+# --- BLE GATT Server（缺失时可用 MockBleTransport / 关闭 BLE 功能） ---------
+bless>=0.2.1

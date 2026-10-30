@@ -1,0 +1,28 @@
+{
+  "name": "OpenAssistant",
+  "short_name": "OpenAssistant",
+  "description": "个人语音记录与智能助手：待办、日程、历史总结、会议纪要与设备管理。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#FBFDF9",
+  "theme_color": "#146C60",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}
