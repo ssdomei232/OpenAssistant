@@ -1,6 +1,8 @@
 """Provider 运行时降级与 pyannote 兼容性测试。"""
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -165,3 +167,53 @@ def test_pyannote_load_error_has_actionable_message(monkeypatch):
     message = str(excinfo.value)
     assert "hf.co/pyannote/speaker-diarization-3.1" in message
     assert "OA_HF_TOKEN" in message
+
+
+# ── faster-whisper CUDA 失败自动回退 CPU ─────────────────────────────────
+
+
+class _FakeSegment:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.words = []
+
+
+class _FakeInfo:
+    language = "zh"
+
+
+class _FakeWhisperModel:
+    def __init__(self, model_size, device, compute_type):
+        self.device = device
+        self.compute_type = compute_type
+
+    def transcribe(self, audio, **kwargs):
+        if self.device == "cuda":
+            # 真实场景：cublas DLL 缺失，错误在迭代/推理阶段才抛出
+            raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+        return iter([_FakeSegment("你好，测试。")]), _FakeInfo()
+
+
+def test_faster_whisper_cuda_error_falls_back_to_cpu(monkeypatch):
+    import types
+
+    fake_module = types.SimpleNamespace(WhisperModel=_FakeWhisperModel)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
+
+    from app.providers.asr import FasterWhisperASR
+
+    asr = FasterWhisperASR("large-v3-turbo", device="cuda", compute_type="float16", language="zh")
+    result = asr.transcribe(np.zeros(16000, dtype=np.float32), 16000)
+    assert result.text == "你好，测试。"
+    assert asr.device == "cpu"
+    assert asr.compute_type == "int8"
+    assert asr.name.endswith("@cpu")
+
+
+def test_looks_like_cuda_error():
+    from app.providers.asr import _looks_like_cuda_error
+
+    assert _looks_like_cuda_error(RuntimeError("Library cublas64_12.dll is not found"))
+    assert _looks_like_cuda_error(RuntimeError("cuDNN error: CUDNN_STATUS_NOT_INITIALIZED"))
+    assert not _looks_like_cuda_error(ValueError("bad audio format"))
+

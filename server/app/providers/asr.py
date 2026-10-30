@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 
 import numpy as np
 
+from .cuda import prepare_cuda_dlls
 from .types import ASRResult, ASRWord
 
 logger = logging.getLogger(__name__)
+
+_CUDA_ERROR_HINTS = ("cublas", "cudnn", "cuda", "gpu", "out of memory", "library cublas")
+
+
+def _looks_like_cuda_error(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(hint in message for hint in _CUDA_ERROR_HINTS)
 
 # A small deterministic corpus used by MockASR so the whole pipeline (cards,
 # schedule extraction, commands, meetings) is demoable on machines without a
@@ -135,51 +144,78 @@ class FasterWhisperASR:
         model_size: str = "large-v3-turbo",
         device: str = "cuda",
         compute_type: str = "float16",
+        *,
+        cuda_dll_dirs: str = "",
+        language: str = "zh",
     ) -> None:
         self.name = f"faster-whisper:{model_size}"
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
+        self.cuda_dll_dirs = cuda_dll_dirs
+        self.language = (language or "").strip()
         self._model = None
+        self._cuda_prepared = False
 
-    def _load(self):
+    # ── 模型加载 ─────────────────────────────────────────────────────────
+    def _make_model(self, device: str, compute_type: str):
+        if os.name == "nt" and not self._cuda_prepared:
+            self._cuda_prepared = True
+            try:
+                prepare_cuda_dlls(self.cuda_dll_dirs)
+            except Exception:  # pragma: no cover - 探测失败不影响启动
+                logger.debug("failed to prepare CUDA DLL dirs", exc_info=True)
         from faster_whisper import WhisperModel  # type: ignore
 
+        return WhisperModel(self.model_size, device=device, compute_type=compute_type)
+
+    def _fallback_cpu(self, reason: str) -> None:
+        logger.warning(
+            "faster-whisper GPU 不可用（%s）；自动切换 CPU int8 继续转写（会明显变慢）。"
+            "如需 GPU：安装 CUDA 12 + cuDNN 9 运行时，或用 OA_CUDA_DLL_DIRS 指向包含 "
+            "cublas64_12.dll/cudnn*_9.dll 的目录。",
+            reason,
+        )
+        self.device = "cpu"
+        self.compute_type = "int8"
+        self.name = f"faster-whisper:{self.model_size}@cpu"
+        self._model = self._make_model("cpu", "int8")
+
+    def _load(self):
         try:
-            self._model = WhisperModel(
-                self.model_size, device=self.device, compute_type=self.compute_type
-            )
+            self._model = self._make_model(self.device, self.compute_type)
         except Exception as exc:  # noqa: BLE001 - CUDA/驱动/模型下载错误类型不定
             if self.device == "cpu":
                 raise
-            logger.warning(
-                "faster-whisper failed on device=%s compute=%s (%s: %s); retrying on CPU int8. "
-                "安装 CUDA/cuDNN 或设置 OA_WHISPER_DEVICE=cpu 可避免该告警。",
-                self.device,
-                self.compute_type,
-                type(exc).__name__,
-                exc,
-            )
-            self.device = "cpu"
-            self.compute_type = "int8"
-            self.name = f"faster-whisper:{self.model_size}@cpu"
-            self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+            self._fallback_cpu(f"{type(exc).__name__}: {exc}")
         return self._model
 
-    def transcribe(self, samples: np.ndarray, sr: int) -> ASRResult:
+    # ── 转写 ────────────────────────────────────────────────────────────
+    def _run(self, audio: np.ndarray) -> ASRResult:
         model = self._model or self._load()
-        audio = np.asarray(samples, dtype=np.float32)
-        segments, info = model.transcribe(
-            audio, language=None, word_timestamps=True, vad_filter=True
-        )
+        kwargs = {"word_timestamps": True, "vad_filter": True, "condition_on_previous_text": False}
+        if self.language:
+            kwargs["language"] = self.language
+        segments, info = model.transcribe(audio, **kwargs)
         words: list[ASRWord] = []
         texts: list[str] = []
+        # generator 是惰性的：编码/推理错误可能在迭代时抛出，必须在这里捕获
         for segment in segments:
             texts.append(segment.text.strip())
             for word in getattr(segment, "words", None) or []:
                 words.append(ASRWord(float(word.start), float(word.end), word.word))
         return ASRResult(
-            language=getattr(info, "language", "zh") or "zh",
+            language=getattr(info, "language", self.language or "zh") or "zh",
             words=words,
             text="".join(texts),
         )
+
+    def transcribe(self, samples: np.ndarray, sr: int) -> ASRResult:
+        audio = np.asarray(samples, dtype=np.float32)
+        try:
+            return self._run(audio)
+        except Exception as exc:  # noqa: BLE001 - 第三方库错误类型不定
+            if self.device != "cpu" and _looks_like_cuda_error(exc):
+                self._fallback_cpu(f"{type(exc).__name__}: {exc}")
+                return self._run(audio)
+            raise

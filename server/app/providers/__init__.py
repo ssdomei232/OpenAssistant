@@ -7,6 +7,7 @@ from typing import Any
 
 from ..config import Settings, get_settings
 from .asr import FasterWhisperASR, MockASR
+from .cuda import prepare_cuda_dlls
 from .diarization import EnergyDiarizer, PyAnnoteDiarizer
 from .llm import OpenAICompatibleLLM, RuleBasedLLM
 from .push import DingTalkPush, NullPush
@@ -81,8 +82,17 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
     asr: Any
     want = "mock" if force_mock else settings.asr_provider
     if want in ("auto", "faster_whisper") and _try("faster_whisper"):
+        # Windows: 把 CUDA 12/cuDNN 9 DLL 目录加入搜索路径（ctranslate2 需要 cublas64_12.dll）
+        try:
+            prepare_cuda_dlls(settings.cuda_dll_dirs)
+        except Exception:  # pragma: no cover - 探测失败不影响服务
+            logger.debug("failed to prepare CUDA DLL directories", exc_info=True)
         asr = FasterWhisperASR(
-            settings.whisper_model, settings.whisper_device, settings.whisper_compute_type
+            settings.whisper_model,
+            settings.whisper_device,
+            settings.whisper_compute_type,
+            cuda_dll_dirs=settings.cuda_dll_dirs,
+            language=settings.whisper_language,
         )
         modes["asr"] = "faster_whisper"
     else:

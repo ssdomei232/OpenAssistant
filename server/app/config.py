@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     hf_token: str = ""  # pyannote model download token
     diarization_model: str = "pyannote/speaker-diarization-3.1"
     embedding_model: str = "pyannote/embedding"
+    whisper_language: str = "zh"  # 固定语言可减少短片段语言识别错误
+    # Windows 下 CUDA 12/cuDNN 9 DLL 目录（分号分隔）；留空自动探测常见位置
+    cuda_dll_dirs: str = ""
 
     # LLM (DeepSeek / any OpenAI-compatible endpoint)
     llm_base_url: str = "https://api.deepseek.com/v1"
@@ -84,6 +87,8 @@ class Settings(BaseSettings):
     job_max_attempts: int = 3
     scheduler_enabled: bool = True
     worker_enabled: bool = True
+    # 低于该 RMS（float，0..1）的片段视为静音，不做 ASR/总结（避免 Whisper 对静音幻觉）
+    min_speech_rms: float = 0.004
 
     # ── dev / demo ────────────────────────────────────────────────────────
     demo_mode: bool = False

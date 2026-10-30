@@ -6,6 +6,7 @@ cards/schedules/todos (user-only) → commands (user-only) → meeting → profi
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 
 from sqlalchemy import select
@@ -15,7 +16,7 @@ from ..db import session_scope
 from ..models import AudioSegment, Card, TranscriptTurn, User
 from ..providers import Providers, get_providers
 from ..providers.speaker import identify
-from ..utils import decode_audio, now_utc, utc_from
+from ..utils import decode_audio, now_utc, rms, utc_from
 from .align import Turn, align
 from .commands import execute_command
 from .entities import add_schedule, add_todo
@@ -25,6 +26,31 @@ from .storage import get_storage
 from .summarizer import CardDraft, summarize
 
 logger = logging.getLogger(__name__)
+
+# Whisper 在静音/噪声片段上常见的"字幕组"幻觉，命中则丢弃该 turn
+_HALLUCINATION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"中文字幕",
+        r"字幕志愿者",
+        r"请不吝点赞",
+        r"订阅.{0,6}(频道|转发|打赏)",
+        r"明镜与点点",
+        r"感谢观看",
+        r"谢谢观看",
+        r"字幕由.{0,20}提供",
+        r"amara\.org",
+        r"Subtitle",
+        r"字幕組",
+    )
+]
+
+
+def looks_like_hallucination(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return True
+    return any(pattern.search(cleaned) for pattern in _HALLUCINATION_PATTERNS)
 
 
 class ProcessingError(Exception):
@@ -95,6 +121,20 @@ def process_segment(segment_id: str, providers: Providers | None = None) -> dict
             ]
             identities = []
         else:
+            level = rms(samples)
+            if level < settings.min_speech_rms:
+                logger.info(
+                    "segment %s skipped: audio level %.4f below min_speech_rms=%.4f",
+                    segment_id,
+                    level,
+                    settings.min_speech_rms,
+                )
+                with session_scope() as db:
+                    segment = db.get(AudioSegment, segment_id)
+                    segment.status = "done"
+                    segment.processed_at = now_utc()
+                    segment.error = "low_level_audio"
+                return {"status": "done", "card_id": None, "turns": 0}
             diarization = providers.diarization.diarize(samples, sr)
             if not diarization:
                 from ..providers.types import DiarizationSegment
@@ -118,6 +158,15 @@ def process_segment(segment_id: str, providers: Providers | None = None) -> dict
             )
             asr_result = providers.asr.transcribe(samples, sr)
             turns = align(asr_result.words, identities)
+        if turns and not demo_turns:
+            filtered = [turn for turn in turns if not looks_like_hallucination(turn.text)]
+            if len(filtered) != len(turns):
+                logger.info(
+                    "segment %s: dropped %s hallucinated turns (likely whisper subtitle artifacts)",
+                    segment_id,
+                    len(turns) - len(filtered),
+                )
+            turns = filtered
         if not turns:
             with session_scope() as db:
                 segment = db.get(AudioSegment, segment_id)

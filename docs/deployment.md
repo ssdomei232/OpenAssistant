@@ -112,6 +112,30 @@ $env:HF_ENDPOINT = "https://hf-mirror.com"
 > 判断是否卡在下载：查看 `%USERPROFILE%\.cache\huggingface\hub\models--mobiuslabsgmbh--faster-whisper-large-v3-turbo\blobs`
 > 下是否有体积不再增长的 `*.incomplete` 文件。
 
+### 1.2.4 Windows GPU：cublas64_12.dll 找不到
+
+若日志出现：
+
+```
+RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+```
+
+说明 ctranslate2 找到了 GPU，但缺少 CUDA 12 的 cuBLAS / cuDNN 9 运行时 DLL。三种解决方式：
+
+1. **推荐：让服务自动探测**（新版本已内置）。程序会扫描 CUDA Toolkit、pip 的
+   `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`，以及 DaVinci Resolve 等自带 CUDA 12
+   运行时的软件目录，并把 DLL 目录加入搜索路径。无需安装 CUDA Toolkit。
+   也可以显式指定：
+   ```ini
+   OA_CUDA_DLL_DIRS=C:\Program Files\Blackmagic Design\DaVinci Resolve
+   ```
+2. 安装 CUDA 12 Toolkit + cuDNN 9 for CUDA 12（并加入 PATH）。
+3. 直接使用 CPU：`OA_WHISPER_DEVICE=cpu`、`OA_WHISPER_COMPUTE_TYPE=int8`
+   （能跑但大模型会非常慢；也可 `OA_WHISPER_MODEL=small`）。
+
+新版本即使 GPU 失败也会**自动回退 CPU int8 并继续转写**，不会再让整条队列卡死。
+可设置 `OA_WHISPER_LANGUAGE=zh` 减少短片段语言检测错误。
+
 ### 1.2.3 录音正常但没有卡片（队列没被处理）
 
 按顺序检查：
@@ -128,6 +152,14 @@ $env:HF_ENDPOINT = "https://hf-mirror.com"
    ```
 4. 也可临时手动跑一遍队列：`python -m app.cli process-pending`。
 5. `python -m app.cli doctor` 可打印队列状态、provider 模式与卡片数量。
+
+> 新版本内置两道音频质量门控，避免生成"字幕组"之类的假卡片：
+>
+> - 音频 RMS 低于 `OA_MIN_SPEECH_RMS`（默认 0.004）的片段直接标记 done、不做 ASR；
+> - Whisper 在静音/噪声上常见的幻觉文本（中文字幕、字幕志愿者、请不吝点赞、感谢观看等）会被丢弃。
+>
+> 如果树莓派上传了大量 1–2 秒的底噪片段，建议在端上把 `vad.absolute_floor`
+> 调到 250~300、`min_silence_ms` 调到 800，减少无效上传。
 
 ### 1.3 创建用户与 API Key
 
