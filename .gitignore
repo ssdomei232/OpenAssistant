@@ -64,7 +64,14 @@ app/android/app/src/main/assets/public/
 app/android/app/src/main/assets/capacitor.config.json
 app/android/app/src/main/assets/capacitor.plugins.json
 app/android/capacitor-cordova-android-plugins/
+app/android/app/releases/
+app/releases/
 app/ios/Pods/
 app/ios/App/App.xcworkspace/xcuserdata/
 app/ios/App/App/public/
 app/ios/App/Podfile.lock
+
+# Android SDK / Gradle caches（本机构建时放在工作区内，避免沙箱写用户目录）
+.android-sdk/
+.android-home/
+.gradle/

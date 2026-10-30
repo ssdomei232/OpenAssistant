@@ -45,22 +45,59 @@ pnpm --dir app run dev
 ## 打包为手机 App（Capacitor）
 
 `app/android/` 已经生成（包名 `com.openassistant.app`），iOS 目录在 macOS 上生成。
+**当前仓库已实际构建出调试安装包**：`app/releases/OpenAssistant-1.0.0-debug.apk`
+（4.2 MB，`com.openassistant.app`，compileSdk/targetSdk 35，minSdk 23，已含 BLE 权限）。
+
+### 环境要求
+
+| 依赖 | 版本 / 说明 |
+|---|---|
+| JDK | **17 或 21**（Gradle 8.11.1 不支持 JDK 25；本机构建使用 `temurin@21.0.11`） |
+| Android SDK | `platforms/android-35`、`build-tools/35.0.0`、`build-tools/34.0.0`、`platform-tools` |
+| Android CLI（可选） | `android sdk install platforms/android-35` 等命令可代替 Android Studio 安装 SDK |
+
+SDK 与 Gradle 缓存可以放在仓库内（受限环境推荐）：
+
+```powershell
+$env:ANDROID_HOME = "C:\...\OpenAssistant\.android-sdk"      # 或你本机 SDK 路径
+$env:JAVA_HOME    = "C:\...\jdk\temurin@21.0.11"
+$env:GRADLE_USER_HOME = "C:\...\OpenAssistant\.gradle"
+# 或在 app/android/local.properties 写入：sdk.dir=C\:\\path\\to\\android-sdk
+```
+
+### 构建步骤（已在 Windows + JDK21 + Android SDK 35 实跑通过）
 
 ```bash
 cd app
 pnpm install
-pnpm build                 # 生成 dist/
-npx cap sync               # 复制 dist 与原生插件（含 BLE 插件）
+pnpm build                  # Web 资源 → dist/
+npx cap sync android        # 复制 dist 与 BLE 插件
 
-# Android：需要 Android Studio / Android SDK
-npx cap add android        # 首次（本仓库已包含 android/，可跳过）
-npx cap open android       # 在 Android Studio 中构建 APK / AAB
-# 或命令行：cd android && ./gradlew assembleDebug
-
-# iOS：需要 macOS + Xcode
-npx cap add ios            # 首次
-npx cap open ios
+cd android
+./gradlew.bat assembleDebug # Windows；Linux/macOS: ./gradlew assembleDebug
+# 产物：android/app/build/outputs/apk/debug/app-debug.apk
+# 仓库副本：app/releases/OpenAssistant-1.0.0-debug.apk
 ```
+
+也可以使用一键脚本（自动探测 JDK/SDK、构建并复制产物）：
+
+```powershell
+./scripts/build-android.ps1
+# 或指定路径：./scripts/build-android.ps1 -JdkHome "C:\Java\jdk-21" -AndroidSdk "C:\Android\Sdk"
+```
+
+安装到手机（开启 USB 调试）：
+
+```bash
+adb install -r app/releases/OpenAssistant-1.0.0-debug.apk
+```
+
+> 已构建产物 SHA256：`465DFF0959D99EB373E26803A311CEE1143C85A5584F1C427946706AD475BA28`
+
+也可以 `npx cap open android` 用 Android Studio 打开工程构建 APK/AAB。
+签名：debug 包使用仓库内 `android/keystore/debug.keystore`（密码 `android`，仅用于调试）；
+正式发布请创建自己的 release keystore 并配置 `android/app/build.gradle` 的 `signingConfigs.release`，
+同时建议修改 `applicationId`。
 
 说明：
 
@@ -71,7 +108,6 @@ npx cap open ios
   首次连接时会弹出系统权限/配对请求。
 - **明文 HTTP**：为方便连接局域网自建 Server，Manifest 中开启了 `usesCleartextTraffic`；
   生产环境建议改用 HTTPS 并关闭该开关。
-- 调试包签名使用 Capacitor 默认 debug keystore，正式发布请替换为自己的签名并修改 `applicationId`。
 - 未安装 Android SDK 时无法在本机出包，但 `pnpm build` / `npx cap sync` 均可验证 Web 资源与插件配置正确。
 
 ---

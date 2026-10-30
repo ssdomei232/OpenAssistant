@@ -126,13 +126,24 @@ pnpm dev                  # 本地调试（浏览器）
 
 ### 3.1 生成 Android / iOS 安装包
 
+环境要求：**JDK 17 或 21**（Gradle 8.11.1 不支持 JDK 25）、Android SDK
+（`platforms/android-35`、`build-tools/35.0.0` 与 `34.0.0`、`platform-tools`）。
+未装 Android Studio 时可用 Android CLI：`android sdk install platforms/android-35 build-tools/35.0.0`
+（每个包一条命令）。
+
 ```bash
 cd app
-npx cap add android        # 首次（本仓库已包含 app/android/，可跳过）
-npx cap add ios            # 需要 macOS + Xcode
-pnpm build && npx cap sync
-npx cap open android       # Android Studio 打包 APK/AAB
+pnpm build
+npx cap sync android
+cd android
+./gradlew.bat assembleDebug     # Linux/macOS: ./gradlew assembleDebug
+# 产物：app/android/app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/releases/OpenAssistant-1.0.0-debug.apk
 ```
+
+本仓库已在 Windows + JDK 21 + Android SDK 35 实际构建通过，调试包副本为
+`app/releases/OpenAssistant-1.0.0-debug.apk`（4.2 MB，debug 签名）。iOS 需在 macOS 上
+`npx cap add ios && npx cap open ios`。
 
 - 手机与 Server 在同一网络时，Server 地址填 `https://assistant.example.com`；
 - API Key 在 App「设置 → 服务器与 API Key」中填入；

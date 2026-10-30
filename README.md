@@ -89,13 +89,17 @@ pnpm build        # 生产构建
 pnpm test         # vitest
 ```
 
-Android / iOS 安装包（`app/android/` 已生成，iOS 需在 macOS 上生成）：
+Android / iOS 安装包（`app/android/` 已生成，**已实际构建出调试 APK**：`app/releases/OpenAssistant-1.0.0-debug.apk`）：
 
 ```bash
-npx cap add android   # 首次（已包含可跳过）
-pnpm build && npx cap sync
-npx cap open android  # Android Studio 打包 APK/AAB
+cd app
+pnpm build && npx cap sync android
+cd android && ./gradlew.bat assembleDebug   # 产物 app/android/app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/releases/OpenAssistant-1.0.0-debug.apk
 ```
+
+需要 JDK 17/21 + Android SDK（`platforms/android-35`、`build-tools/35.0.0`、`build-tools/34.0.0`、`platform-tools`），
+详细步骤与签名说明见 [`app/README.md`](app/README.md)。iOS 需在 macOS 上 `npx cap add ios`。
 
 打开 App 后在「设置」里填写 Server 地址与 `oa_demo_key`；不配置则进入演示模式查看内置数据。
 
