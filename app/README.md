@@ -82,8 +82,10 @@ cd android
 也可以使用一键脚本（自动探测 JDK/SDK、构建并复制产物）：
 
 ```powershell
-./scripts/build-android.ps1
-# 或指定路径：./scripts/build-android.ps1 -JdkHome "C:\Java\jdk-21" -AndroidSdk "C:\Android\Sdk"
+# Windows 可能禁止运行未签名的 .ps1，可临时用：
+powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1
+# 或指定路径：
+./scripts/build-android.ps1 -JdkHome "C:\Java\jdk-21" -AndroidSdk "C:\Android\Sdk"
 ```
 
 安装到手机（开启 USB 调试）：
