@@ -291,3 +291,38 @@ def pending_segment_ids(limit: int = 5) -> list[str]:
             .limit(limit)
         ).all()
         return [row.id for row in rows]
+
+
+def requeue_stuck_segments() -> int:
+    """把上次进程遗留的 ``processing`` 片段重新入队（单 worker 架构，重启后可安全恢复）。
+
+    Server 崩溃/重启时，正在处理的片段会永久停留在 processing，普通 worker 只挑选
+    queued 片段，导致这些音频再也没有总结。启动 worker 时调用本函数修复。
+    """
+    with session_scope() as db:
+        rows = db.scalars(
+            select(AudioSegment).where(AudioSegment.status == "processing")
+        ).all()
+        for row in rows:
+            row.status = "queued"
+            row.error = "recovered_after_restart"
+        if rows:
+            db.flush()
+        return len(rows)
+
+
+def requeue_failed_segments(user_id: str | None = None) -> int:
+    """把 failed 片段重置为 queued（模型/依赖修好后恢复历史失败数据）。"""
+    with session_scope() as db:
+        stmt = select(AudioSegment).where(AudioSegment.status == "failed")
+        if user_id:
+            stmt = stmt.where(AudioSegment.user_id == user_id)
+        rows = db.scalars(stmt).all()
+        for row in rows:
+            row.status = "queued"
+            row.attempts = 0
+            row.error = None
+            row.processed_at = None
+        if rows:
+            db.flush()
+        return len(rows)

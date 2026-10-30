@@ -26,9 +26,14 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 ## 2. 健康检查
 
 ### GET `/health`
-无需认证。
+无需认证。除 provider 模式外，还返回后台 worker 与音频处理队列状态（用于排查"有录音但没总结"）：
 ```json
-{"status": "ok", "version": "1.0.0", "mode": {"asr": "mock", "diarization": "energy", "llm": "rule", "search": "builtin"}, "time": "2026-03-05T01:00:00Z"}
+{"status": "ok", "version": "1.0.0",
+ "mode": {"asr": "faster_whisper", "diarization": "pyannote", "llm": "deepseek-chat"},
+ "worker": {"enabled": true, "alive": true, "ticks": 120, "processed_total": 18,
+            "last_tick_at": "2026-03-05T01:00:00Z", "last_tick_age_s": 0.4, "last_error": null},
+ "audio": {"queued": 3, "processing": 1, "failed": 2, "done": 18},
+ "time": "2026-03-05T01:00:00Z"}
 ```
 
 ### GET `/ready`
@@ -142,6 +147,16 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 
 ### POST `/audio/segments/{id}/reprocess`
 重新跑管道（用于换模型/修复失败），响应同 `GET /audio/segments/{id}`。
+
+### POST `/audio/segments/requeue-failed`
+把当前用户所有 `failed` 片段重置为 `queued`（模型/依赖修复后恢复历史失败数据）。
+响应 `{"requeued": 58, "status": "queued"}`。
+
+### POST `/audio/segments/requeue-stuck`
+把卡在 `processing` 的片段重新入队（Server 重启/崩溃后遗留）。响应 `{"requeued": 4, "status": "queued"}`。
+
+### GET `/audio/segments/pending/count`
+`{"queued": 12, "pending_ids": ["seg_..."]}`。
 
 ## 7. 总结卡片
 

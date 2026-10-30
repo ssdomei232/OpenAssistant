@@ -82,6 +82,53 @@ python -m pip install --user omegaconf
 pyannote.audio 4.x 也可用新模型（同样需要授权）：
 `OA_DIARIZATION_MODEL=pyannote/speaker-diarization-community-1`。
 
+### 1.2.2 模型下载慢 / 卡住（国内网络）
+
+faster-whisper large-v3-turbo 首次推理需要下载约 1.6GB 模型；HuggingFace 直连在国内
+经常只有几十 KB/s 甚至卡住，表现为 **第一段音频长时间停在 processing、日志无报错**。
+
+推荐做法：
+
+```ini
+# server/.env
+OA_HF_ENDPOINT=https://hf-mirror.com     # 使用 HF 镜像（也可设系统环境变量 HF_ENDPOINT）
+# OA_WHISPER_MODEL=small                 # 或先换小模型快速跑通
+```
+
+然后**预先下载模型**（断点续传，失败可重跑）：
+
+```bash
+cd server
+python -m app.cli download-models --only all
+# 或分步：--only asr / --only pyannote
+```
+
+下载完成后重启 Server。也可以直接设置系统环境变量：
+
+```powershell
+$env:HF_ENDPOINT = "https://hf-mirror.com"
+```
+
+> 判断是否卡在下载：查看 `%USERPROFILE%\.cache\huggingface\hub\models--mobiuslabsgmbh--faster-whisper-large-v3-turbo\blobs`
+> 下是否有体积不再增长的 `*.incomplete` 文件。
+
+### 1.2.3 录音正常但没有卡片（队列没被处理）
+
+按顺序检查：
+
+1. `GET /api/v1/health`：确认 `worker.enabled=true`、`worker.alive=true`；
+   `audio.queued` 应逐渐下降、`audio.done` 上升。若 `worker.alive=false`，
+   检查启动日志里的 `background worker started` 与 `OA_WORKER_ENABLED`；
+   新版本会在第一个 HTTP 请求时自愈启动 worker。
+2. Server 重启会自动把上次遗留的 `processing` 重新入队（`recovered_after_restart`）。
+3. 修复模型/依赖后，把历史失败片段重新入队：
+   ```bash
+   python -m app.cli requeue-failed
+   python -m app.cli process-pending        # 或等 worker 自动处理
+   ```
+4. 也可临时手动跑一遍队列：`python -m app.cli process-pending`。
+5. `python -m app.cli doctor` 可打印队列状态、provider 模式与卡片数量。
+
 ### 1.3 创建用户与 API Key
 
 ```bash

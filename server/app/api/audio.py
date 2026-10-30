@@ -13,7 +13,13 @@ from ..config import get_settings
 from ..deps import CurrentUser, DbSession
 from ..models import AudioSegment
 from ..serializers import segment_out
-from ..services.pipeline import process_segment, reprocess_segment
+from ..services.pipeline import (
+    pending_segment_ids,
+    process_segment,
+    reprocess_segment,
+    requeue_failed_segments,
+    requeue_stuck_segments,
+)
 from ..services.storage import get_storage
 from ..utils import decode_audio, sha256_bytes, utc_from
 
@@ -166,3 +172,29 @@ def reprocess(segment_id: str, user: CurrentUser, db: DbSession, process_now: bo
     db.expire_all()
     segment = db.get(AudioSegment, segment_id)
     return segment_out(segment)
+
+
+@router.post("/audio/segments/requeue-failed")
+def requeue_failed(user: CurrentUser) -> dict:
+    """把该用户的 failed 片段重新入队（模型/依赖修复后恢复历史失败数据）。"""
+    count = requeue_failed_segments(user.id)
+    return {"requeued": count, "status": "queued"}
+
+
+@router.post("/audio/segments/requeue-stuck")
+def requeue_stuck() -> dict:
+    """把卡在 processing 的片段重新入队（Server 重启/崩溃后遗留）。"""
+    count = requeue_stuck_segments()
+    return {"requeued": count, "status": "queued"}
+
+
+@router.get("/audio/segments/pending/count")
+def pending_count(user: CurrentUser, db: DbSession) -> dict:
+    from sqlalchemy import func
+
+    queued = db.scalar(
+        select(func.count(AudioSegment.id)).where(
+            AudioSegment.user_id == user.id, AudioSegment.status == "queued"
+        )
+    ) or 0
+    return {"queued": int(queued), "pending_ids": pending_segment_ids(limit=5)}

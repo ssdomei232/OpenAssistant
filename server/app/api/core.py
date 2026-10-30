@@ -1,7 +1,7 @@
 """Core API: health, account, settings, profile, voiceprint."""
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import select
 
 from .. import __version__
@@ -20,16 +20,32 @@ ALLOWED_ALIASES = 20
 
 
 @router.get("/health")
-def health() -> dict:
+def health(request: Request, db: DbSession) -> dict:
+    from sqlalchemy import func
+
+    from ..models import AudioSegment
     from ..providers import get_providers
 
     providers = get_providers()
+    worker = getattr(request.app.state, "worker", None)
+    status_counts = dict(
+        db.execute(
+            select(AudioSegment.status, func.count(AudioSegment.id)).group_by(AudioSegment.status)
+        ).all()
+    )
     return {
         "status": "ok",
         "version": __version__,
         "mode": providers.modes,
         "providers": providers.describe(),
         "scheduler": "enabled" if settings.scheduler_enabled else "disabled",
+        "worker": worker.status() if worker is not None else {"enabled": False, "alive": False},
+        "audio": {
+            "queued": int(status_counts.get("queued", 0)),
+            "processing": int(status_counts.get("processing", 0)),
+            "failed": int(status_counts.get("failed", 0)),
+            "done": int(status_counts.get("done", 0)),
+        },
         "time": now_utc().isoformat() + "Z",
     }
 

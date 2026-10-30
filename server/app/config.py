@@ -5,6 +5,7 @@ Every setting can be overridden with an ``OA_``-prefixed environment variable
 """
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -88,6 +89,11 @@ class Settings(BaseSettings):
     demo_mode: bool = False
     cors_origins: str = "*"
 
+    # ── HuggingFace 下载（国内网络建议配置镜像） ──────────────────────────
+    # OA_HF_ENDPOINT=https://hf-mirror.com 可显著加速/稳定模型下载
+    hf_endpoint: str = ""
+    hf_home: str = ""
+
     # ── derived helpers ───────────────────────────────────────────────────
     @property
     def cors_origin_list(self) -> list[str]:
@@ -108,4 +114,11 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     settings = Settings()
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
+    # huggingface_hub 读取的是进程环境变量，pydantic 读取 .env 不会自动导出；
+    # 这里把 OA_HF_ENDPOINT / OA_HF_HOME 转成 HF_ENDPOINT / HF_HOME，
+    # 便于在 .env 里配置国内镜像（如 https://hf-mirror.com）。
+    if settings.hf_endpoint:
+        os.environ.setdefault("HF_ENDPOINT", settings.hf_endpoint)
+    if settings.hf_home:
+        os.environ.setdefault("HF_HOME", settings.hf_home)
     return settings

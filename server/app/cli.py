@@ -62,13 +62,114 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_process_pending(_args: argparse.Namespace) -> int:
-    from .services.pipeline import pending_segment_ids, process_segment
+    from .services.pipeline import pending_segment_ids, process_segment, requeue_stuck_segments
 
     init_db()
+    recovered = requeue_stuck_segments()
     processed = []
     for segment_id in pending_segment_ids(limit=100):
         processed.append(process_segment(segment_id))
-    print(json.dumps({"processed": processed}, ensure_ascii=False, indent=2, default=str))
+    print(
+        json.dumps(
+            {"requeued_stuck": recovered, "processed": processed},
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
+def cmd_requeue_failed(args: argparse.Namespace) -> int:
+    from .services.pipeline import requeue_failed_segments
+
+    init_db()
+    count = requeue_failed_segments(args.user_id)
+    print(json.dumps({"requeued_failed": count, "status": "queued"}, ensure_ascii=False))
+    return 0
+
+
+def cmd_requeue_stuck(_args: argparse.Namespace) -> int:
+    from .services.pipeline import requeue_stuck_segments
+
+    init_db()
+    count = requeue_stuck_segments()
+    print(json.dumps({"requeued_stuck": count, "status": "queued"}, ensure_ascii=False))
+    return 0
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    """打印服务端运行诊断：DB、provider 模式、队列计数。"""
+    from sqlalchemy import func, select
+
+    from .db import SessionLocal
+    from .models import AudioSegment, Card
+    from .providers import build_providers
+
+    init_db()
+    settings = get_settings()
+    providers = build_providers(settings)
+    with SessionLocal() as db:
+        counts = dict(
+            db.execute(select(AudioSegment.status, func.count(AudioSegment.id)).group_by(AudioSegment.status)).all()
+        )
+        cards = db.scalar(select(func.count(Card.id))) or 0
+    report = {
+        "database": settings.database_url,
+        "storage_dir": str(settings.storage_dir),
+        "scheduler_enabled": settings.scheduler_enabled,
+        "worker_enabled": settings.worker_enabled,
+        "providers": providers.modes,
+        "audio_segments": {k: int(v) for k, v in counts.items()},
+        "cards": int(cards),
+        "hint": "若 queued>0 且 worker_enabled=true，请确认 Server 进程的 /api/v1/health.worker.alive=true",
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def cmd_download_models(args: argparse.Namespace) -> int:
+    """预下载 faster-whisper 与 pyannote 模型（支持 HF 镜像，可断点续传）。"""
+    from huggingface_hub import snapshot_download
+
+    settings = get_settings()
+    only = args.only
+    repos: list[tuple[str, str, str | None]] = []
+    if only in ("all", "asr"):
+        try:
+            from faster_whisper.utils import _MODELS
+
+            repo = _MODELS.get(settings.whisper_model, settings.whisper_model)
+            repos.append(("asr", repo, None))
+        except Exception as exc:  # noqa: BLE001
+            print(f"skip ASR model: {exc}")
+    if only in ("all", "pyannote"):
+        if settings.hf_token:
+            for repo in (
+                settings.diarization_model,
+                "pyannote/segmentation-3.0",
+                settings.embedding_model,
+                "pyannote/wespeaker-voxceleb-resnet34-LM",
+            ):
+                repos.append(("pyannote", repo, settings.hf_token))
+        else:
+            print("skip pyannote models: OA_HF_TOKEN is empty")
+
+    failed: list[str] = []
+    for kind, repo, token in repos:
+        print(f"downloading [{kind}] {repo} ...", flush=True)
+        try:
+            path = snapshot_download(repo_id=repo, token=token)
+            print(f"  OK -> {path}")
+        except Exception as exc:  # noqa: BLE001
+            failed.append(repo)
+            print(f"  FAILED: {type(exc).__name__}: {exc}")
+    if failed:
+        print("\n以下模型下载失败（可尝试 OA_HF_ENDPOINT=https://hf-mirror.com 后重试）：")
+        for repo in failed:
+            print("  -", repo)
+        return 1
+    print("\n模型下载完成 ✅")
     return 0
 
 
@@ -113,8 +214,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reset", action="store_true", help="drop all tables first")
     p.set_defaults(func=cmd_seed_demo)
 
-    p = sub.add_parser("process-pending", help="process queued audio segments")
+    p = sub.add_parser("process-pending", help="process queued audio segments (also recovers stuck processing)")
     p.set_defaults(func=cmd_process_pending)
+
+    p = sub.add_parser("requeue-failed", help="reset failed audio segments back to queued")
+    p.add_argument("--user-id", default=None)
+    p.set_defaults(func=cmd_requeue_failed)
+
+    p = sub.add_parser("requeue-stuck", help="reset stuck 'processing' segments back to queued")
+    p.set_defaults(func=cmd_requeue_stuck)
+
+    p = sub.add_parser("doctor", help="print runtime diagnostics (queue counts, provider modes)")
+    p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("download-models", help="pre-download whisper/pyannote models (supports HF mirror)")
+    p.add_argument("--only", choices=["all", "asr", "pyannote"], default="all")
+    p.set_defaults(func=cmd_download_models)
 
     p = sub.add_parser("show-config", help="print effective settings")
     p.set_defaults(func=cmd_show_config)

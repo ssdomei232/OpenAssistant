@@ -26,6 +26,36 @@ logger = logging.getLogger("openassistant")
 settings = get_settings()
 
 
+def _ensure_runtime(app: FastAPI) -> None:
+    """确保 worker / scheduler 已启动（幂等）。
+
+    正常启动由 lifespan 完成；本函数作为自愈路径，在第一个 HTTP 请求到达时
+    补齐未启动的后台组件，避免出现"录音上传成功但永远没有卡片"的静默故障。
+    """
+    state = app.state
+    provider_check = get_providers()
+    if settings.scheduler_enabled and getattr(state, "scheduler", None) is None:
+        scheduler = SchedulerService(settings, provider_check)
+        set_scheduler(scheduler)
+        scheduler.start()
+        state.scheduler = scheduler
+        logger.warning("scheduler was missing; started lazily")
+    if not settings.worker_enabled:
+        return
+    worker = getattr(state, "worker", None)
+    if worker is None:
+        from .services.scheduler import get_scheduler as _get_scheduler
+
+        worker = BackgroundWorker(settings, provider_check, _get_scheduler())
+        worker.start()
+        worker.start_watchdog()
+        state.worker = worker
+        logger.warning("background worker was missing; started lazily")
+    elif not worker.alive:
+        logger.error("background worker thread is dead; restarting")
+        worker.start()
+
+
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -49,6 +79,12 @@ def create_app() -> FastAPI:
 
             worker = BackgroundWorker(settings, providers, _get_scheduler())
             worker.start()
+            worker.start_watchdog()
+        else:
+            logger.warning(
+                "OA_WORKER_ENABLED=false: 上传的音频不会自动处理（不会生成卡片）。"
+                "个人部署请保持 true。"
+            )
         app.state.worker = worker
         app.state.scheduler = scheduler
         try:
@@ -81,6 +117,16 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(api_router, prefix=settings.api_prefix)
+
+    @app.middleware("http")
+    async def ensure_runtime_middleware(request: Request, call_next):
+        # 自愈：某些启动方式（--lifespan off、热重载器差异等）可能没执行 lifespan，
+        # 导致 worker/scheduler 没启动；第一个请求到达时补齐，避免"有录音但永远不处理"。
+        try:
+            _ensure_runtime(request.app)
+        except Exception:  # pragma: no cover - 自愈失败不应影响 API
+            logger.exception("failed to lazily start background runtime")
+        return await call_next(request)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:
