@@ -94,7 +94,12 @@ powershell -ExecutionPolicy Bypass -File scripts/build-android.ps1
 adb install -r app/releases/OpenAssistant-1.0.0-debug.apk
 ```
 
-> 已构建产物 SHA256：`465DFF0959D99EB373E26803A311CEE1143C85A5584F1C427946706AD475BA28`
+> 已构建产物 SHA256：`5718E0716EEED950B3AF7F3E48DAEE03A46EEA004BF0DC1298E7700B03250851`
+
+> 如果连接蓝牙时报 `Missing the following permissions in AndroidManifest.xml: android.permission.ACCESS_FINE_LOCATION`：
+> 本工程已在 `src/platform/ble.ts` 中调用 `BluetoothLe.initialize({ androidNeverForLocation: true })`，
+> 并让 `ACCESS_FINE_LOCATION` 仅对 Android 11 及以下生效（`maxSdkVersion="30"`），
+> Android 12+ 只申请 `BLUETOOTH_SCAN` / `BLUETOOTH_CONNECT`。修改后需重新 `pnpm build && npx cap sync android` 出包。
 
 也可以 `npx cap open android` 用 Android Studio 打开工程构建 APK/AAB。
 签名：debug 包使用仓库内 `android/keystore/debug.keystore`（密码 `android`，仅用于调试）；
@@ -168,6 +173,15 @@ src/api/
 - **原生 App**：Android/iOS 通过 `@capacitor-community/bluetooth-le` 连接（`src/platform/ble.ts` 原生实现）；
 - **浏览器**：Android Chrome / 桌面 Chrome / Edge，页面必须运行在 HTTPS 或 localhost（Web Bluetooth 安全上下文限制）；
 - 不可用时显示说明，并仍可从 `GET /devices` 查看 Server 备份配置。
+
+Android 权限策略（App 只用蓝牙管理录音端，不用于定位）：
+
+| Android 版本 | 申请的权限 |
+|---|---|
+| 12+（API 31+） | `BLUETOOTH_SCAN`（`neverForLocation`）、`BLUETOOTH_CONNECT` |
+| 11 及以下（API ≤30） | `BLUETOOTH`、`BLUETOOTH_ADMIN`、`ACCESS_COARSE_LOCATION`、`ACCESS_FINE_LOCATION`（`maxSdkVersion=30`） |
+
+初始化时固定传 `androidNeverForLocation: true`；若未来需要基于蓝牙做定位，再改为 `false` 并在 Manifest 中放开定位权限。
 
 协议（与 Agent 端约定）：
 

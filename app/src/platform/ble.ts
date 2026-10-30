@@ -236,7 +236,10 @@ async function connectNative(): Promise<NativeConnection> {
   const { BluetoothLe } = (await import('@capacitor-community/bluetooth-le')) as unknown as {
     BluetoothLe: any;
   };
-  await BluetoothLe.initialize({ request: true });
+  // 仅用于连接录音端做设备管理，不用于定位：
+  // Android 12+ 只申请 BLUETOOTH_SCAN / BLUETOOTH_CONNECT，不申请精确定位权限。
+  // （Android 11 及以下仍会按系统要求申请定位权限，对应 Manifest 中 maxSdkVersion=30 的声明。）
+  await BluetoothLe.initialize({ request: true, androidNeverForLocation: true });
   const device = await BluetoothLe.requestDevice({
     services: [BLE_SERVICE_UUID],
     namePrefix: 'OpenAssistant',
