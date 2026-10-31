@@ -1,6 +1,6 @@
 """Provider 运行时降级包装。
 
-真实模型（pyannote / faster-whisper）可能因为模型未授权、显卡不可用、网络失败等
+真实模型（pyannote / FunASR / faster-whisper）可能因为模型未授权、显卡不可用、网络失败等
 原因在**首次调用时**才暴露问题。直接让异常冒泡会导致每段音频都失败重试；
 这里在第一次失败后自动切换到离线实现（energy / spectral），并只告警一次，
 保证录音/卡片主流程继续可用，同时把 /health 里的 mode 更新为 fallback。

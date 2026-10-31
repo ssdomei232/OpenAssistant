@@ -38,6 +38,9 @@ os.environ.update(
         "OA_LLM_PROVIDER": "rule",
         "OA_PUSH_ENABLED": "true",
         "OA_LOG_LEVEL": "WARNING",
+        # 测试默认不等待合并窗口（否则每张卡都要等 20s）；合并行为在
+        # tests/test_conversation_merge.py 里显式设置窗口验证。
+        "OA_CONVERSATION_MERGE_WINDOW_S": "0",
     }
 )
 

@@ -29,12 +29,16 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 无需认证。除 provider 模式外，还返回后台 worker 与音频处理队列状态（用于排查"有录音但没总结"）：
 ```json
 {"status": "ok", "version": "1.0.0",
- "mode": {"asr": "faster_whisper", "diarization": "pyannote", "llm": "deepseek-chat"},
+ "mode": {"asr": "funasr", "diarization": "pyannote", "llm": "deepseek-chat"},
+ "timezone": "Asia/Shanghai",
  "worker": {"enabled": true, "alive": true, "ticks": 120, "processed_total": 18,
-            "last_tick_at": "2026-03-05T01:00:00Z", "last_tick_age_s": 0.4, "last_error": null},
- "audio": {"queued": 3, "processing": 1, "failed": 2, "done": 18},
+            "last_tick_at": "2026-03-05T01:00:00Z", "last_tick_age_s": 0.4, "last_error": null,
+            "card_merge": {"enabled": true, "interval_s": 300.0, "lookback_s": 1800.0,
+                           "last_run_at": "2026-03-05T01:00:00Z", "last_merged": 1}},
+ "audio": {"queued": 3, "processing": 1, "transcribed": 2, "failed": 2, "done": 18},
  "time": "2026-03-05T01:00:00Z"}
 ```
+`timezone` 为服务器默认时区（`OA_TIMEZONE`），可与 `/me` 返回的用户时区对照排查时间偏移。
 
 ### GET `/ready`
 检查数据库与调度器；`{"status": "ready"|"degraded", "checks": {...}}`。
@@ -58,6 +62,8 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 ### PATCH `/me`
 请求（全部可选）：`{"display_name": "...", "aliases": ["..."], "timezone": "Asia/Shanghai", "search_provider": "builtin|deepseek"}`
 - `aliases` 最多 20 个、每个 1–64 字符；用于 AI 提示词中识别对用户的称呼。
+- `timezone` 必须是合法 IANA 时区名（如 `Asia/Shanghai`、`UTC`），非法返回 422 `invalid_timezone`。
+  服务器默认时区由 `OA_TIMEZONE` 配置；不设置用户时区时使用它。
 - 返回同 `GET /me`。
 
 ### GET `/me/settings`
@@ -134,10 +140,26 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 
 ### GET `/audio/segments/{id}`
 ```json
-{"id": "...", "status": "queued|processing|done|failed", "error": null, "card_id": "card_...",
- "duration_s": 42.5, "sample_rate": 48000, "channels": 1, "device_id": "pi-livingroom",
- "received_at": "...", "processed_at": "..."}
+{"id": "...", "status": "queued|processing|transcribed|done|failed", "error": null, "card_id": "card_...",
+ "discard": null, "duration_s": 42.5, "sample_rate": 48000, "channels": 1,
+ "device_id": "pi-livingroom", "received_at": "...", "processed_at": "..."}
 ```
+`status=transcribed` 表示转写已完成，正在等待合并窗口
+（`OA_CONVERSATION_MERGE_WINDOW_S`，默认 20s）看是否还有时间相近的音频一起总结；随后会变为 `done`。
+
+`status=done` 且 `card_id=null` 表示未生成卡片，`error` 为原因：
+- `low_level_audio`：静音片段（RMS 低于阈值），未做 ASR；
+- `no_speech_recognised`：无有效转写（含 ASR 幻觉过滤后为空）；
+- `discarded_by_ai`：AI 判断音频过于简短/无意义而丢弃（不触发日程/待办/指令）；
+- `discarded_low_value_audio`：无 LLM 时的保守规则兜底丢弃。
+
+被丢弃时 `discard` 为 `{"source": "llm|rule", "reason": "丢弃原因", "turns": 3}`，便于排查。
+可通过 `OA_SUMMARIZER_DISCARD_ENABLED=false` 关闭丢弃策略，`OA_SUMMARIZER_DISCARD_MIN_CHARS`
+调整规则兜底的“过短”阈值。含日程/待办/指令或转写信息量足够的音频不会被丢弃。
+
+**对话合并**：同一用户、录制时间相邻（间隔 ≤ `OA_CONVERSATION_MERGE_GAP_S`，默认 45s）的多个片段
+会合并成一张卡片，它们的 `card_id` 指向同一张卡；卡片 `source_meta.audio_segment_ids` 记录全部片段。
+`OA_CONVERSATION_MERGE_ENABLED=false` 可关闭合并。
 
 ### GET `/audio/segments`
 `?limit&cursor&status` → 分页列表（Agent 用于对账）。
@@ -156,7 +178,10 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
 把卡在 `processing` 的片段重新入队（Server 重启/崩溃后遗留）。响应 `{"requeued": 4, "status": "queued"}`。
 
 ### GET `/audio/segments/pending/count`
-`{"queued": 12, "pending_ids": ["seg_..."]}`。
+```json
+{"queued": 12, "awaiting_summary": 3, "pending_ids": ["seg_..."]}
+```
+`awaiting_summary` = 已转写、等待合并窗口/总结的片段数。
 
 ## 7. 总结卡片
 
@@ -174,6 +199,8 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
     "occurred_at": "2026-03-05T09:30:00+08:00",
     "duration_s": 42.5,
     "audio_url": "/api/v1/audio/seg_.../file",
+    "audio_segment_ids": ["seg_...", "seg_..."],
+    "audio_urls": ["/api/v1/audio/seg_.../file", "/api/v1/audio/seg_.../file"],
     "audio_available": true,
     "labels": {"user_turns": 12, "other_turns": 9},
     "meeting_id": null,
@@ -205,6 +232,17 @@ Authorization: Bearer <api_key>     # 二者等价，任选其一
   "created_at": "...", "updated_at": "..."
 }
 ```
+
+### POST `/cards/merge`（手动合并对话）
+App 在历史记录页多选多张卡片后合并成一张并重新总结（不等待 AI 定时复盘）。
+```json
+{"card_ids": ["card_a", "card_b"], "note": "这两段是同一场讨论（可选）"}
+```
+- 保留 `occurred_at` 最早的卡片为主卡片，其余卡片软删除；写 `AuditLog(action=card.merge, note=用户手动合并)`；
+- 合并各卡片转写后**重新调用总结**，更新主卡片标题/摘要/关键信息/人物；日程/待办/指令只改挂到主卡片，**不重复执行**；
+- 响应同 `GET /cards/{id}`，额外带 `merged_card_ids` 与 `merge_reason`；
+- 错误：`card_not_found`/`card_deleted`（404/409）、`too_few_cards`（422）、
+  `cannot_merge_meeting_cards`（409，会议卡片由会议纪要流程管理）、`merge_rejected`（422）。
 
 ### PATCH `/cards/{id}`（勘误）
 请求（任选）：`{"title": "...", "summary": "...", "key_points": ["..."], "type": "media", "note": "其实是电视节目声音"}`
@@ -341,7 +379,8 @@ App 通过蓝牙写入的配置回传 Server 备份：
 ## 15. 管理/审计
 
 ### GET `/audit`
-`?limit&cursor` → 勘误/删除/声纹/配置变更记录。
+`?limit&cursor` → 勘误/删除/声纹/配置变更记录；AI 复盘或用户手动合并卡片也会写入
+`action=card.merge`（`after.merged_into` 指向合并后的主卡片，`note` 区分「AI 复盘合并」/「用户手动合并」）。
 
 ### 卡片的异步处理状态
 上传后管道异步执行；Server 提供 `GET /audio/segments/{id}` 轮询。处理完成后生成卡片，

@@ -1,10 +1,11 @@
-"""检查 HuggingFace 模型（pyannote / faster-whisper）的可访问性与 gated 状态。
+"""检查 ASR / pyannote 模型的可访问性、gated 状态与本地依赖。
 
 用法（在 server/ 目录或用 PYTHONPATH 指向 server）：
     python scripts/check_hf_models.py
 
-读取 server/.env 中的 OA_HF_TOKEN，用 HuggingFace API 查询模型是否 gated，
-并打印 faster-whisper 的 model size → HF repo 映射，便于排查 403 / 模型名错误。
+ASR 默认使用 FunASR（ModelScope，见 ``OA_FUNASR_*``）；本脚本会打印 FunASR 配置与
+依赖是否就绪，并读取 ``server/.env`` 中的 ``OA_HF_TOKEN``，用 HuggingFace API 查询
+pyannote（以及可选回退的 faster-whisper）模型是否 gated，便于排查 403 / 模型名错误。
 """
 import json
 import os
@@ -45,11 +46,25 @@ def main() -> int:
     print("OA_DIARIZATION_MODEL:", s.diarization_model)
     print("OA_EMBEDDING_MODEL:", s.embedding_model)
     print()
+    print("ASR（FunASR）：")
+    print("  OA_ASR_PROVIDER:", s.asr_provider)
+    print("  OA_FUNASR_MODEL:", s.funasr_model)
+    print("  OA_FUNASR_VAD_MODEL:", s.funasr_vad_model or "(off)")
+    print("  OA_FUNASR_PUNC_MODEL:", s.funasr_punc_model or "(off)")
+    print("  OA_FUNASR_DEVICE:", s.funasr_device)
+    print("  OA_FUNASR_HUB:", s.funasr_hub)
+    try:
+        import funasr  # type: ignore  # noqa: F401
+
+        print("  funasr package: installed")
+    except Exception as exc:  # noqa: BLE001
+        print("  funasr package: NOT installed ->", exc)
+    print()
     print("HuggingFace 模型状态（gated=auto/true 表示需要网页接受条款）：")
     for repo in dict.fromkeys(repos):
         print(f"  {repo} -> {check(repo)}")
 
-    print("\nfaster-whisper model size -> HF repo：")
+    print("\nfaster-whisper model size -> HF repo（可选回退）：")
     try:
         from faster_whisper.utils import _MODELS
 

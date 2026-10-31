@@ -37,7 +37,13 @@ def tzinfo_for(name: str) -> timezone:
     try:
         return ZoneInfo(name)  # type: ignore[return-value]
     except (ZoneInfoNotFoundError, ValueError):
-        return timezone(timedelta(hours=8))
+        # 时区名非法/系统缺少 tzdata：回落到服务器默认时区（OA_TIMEZONE）
+        try:
+            from ..config import default_timezone
+
+            return ZoneInfo(default_timezone())  # type: ignore[return-value]
+        except Exception:
+            return timezone(timedelta(hours=8))
 
 
 def to_local(dt_utc: datetime, tz_name: str) -> datetime:

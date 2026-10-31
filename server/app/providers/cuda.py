@@ -1,4 +1,7 @@
-"""Windows 下为 ctranslate2/faster-whisper 准备 CUDA 12 / cuDNN 9 的 DLL 搜索路径。
+"""Windows 下为 ASR 依赖准备 CUDA 12 / cuDNN 9 的 DLL 搜索路径。
+
+FunASR 基于 PyTorch，pip 轮子自带 CUDA 运行时；本模块主要服务于仍在使用
+faster-whisper（ctranslate2）的老部署，也可为 ONNX Runtime 等组件补 DLL。
 
 ctranslate2 的 CUDA 加速依赖 ``cublas64_12.dll`` / ``cublasLt64_12.dll`` /
 ``cudnn*_9.dll``；Windows 上这些 DLL 不在默认搜索路径时，会在推理阶段报
@@ -11,7 +14,7 @@ ctranslate2 的 CUDA 加速依赖 ``cublas64_12.dll`` / ``cublasLt64_12.dll`` /
 * pip 安装的 ``nvidia-cublas-cu12`` / ``nvidia-cudnn-cu12``（site-packages/nvidia/*/bin）
 * 常见自带 CUDA 运行时的应用（如 DaVinci Resolve，含 CUDA 12 + cuDNN 9）
 
-探测失败不会影响服务启动，ASR 会自动回退 CPU int8。
+探测失败不会影响服务启动，ASR 会自动回退 CPU。
 """
 from __future__ import annotations
 

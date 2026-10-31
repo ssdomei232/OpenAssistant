@@ -22,6 +22,8 @@ def summarizer_system(aliases: list[str], profile: str) -> str:
 
 请只输出一个 JSON 对象，字段如下：
 {{
+  "discard": false,
+  "discard_reason": "仅在 discard 为 true 时填写：丢弃原因",
   "title": "不超过 24 字的卡片标题（概括这段内容）",
   "summary": "2-4 句中文摘要",
   "key_points": ["关键信息，最多 5 条"],
@@ -44,7 +46,12 @@ def summarizer_system(aliases: list[str], profile: str) -> str:
 注意：
 1. 日程、待办、指令必须来自 [使用者] 的发言；没有就返回空数组。
 2. 时间表达请结合当前时间换算成具体日期时间。
-3. 只输出 JSON，不要 Markdown 代码块以外的解释。"""
+3. 如果整段音频几乎没有有效信息（例如只有“嗯、啊、哦、好的、谢谢、知道了”这类语气词/应答，
+   或只有一两秒且语义为空的噪声人声），可以把 discard 设为 true 并简要写明 discard_reason，
+   此时其余字段留空或返回默认值即可，不要勉强编造卡片。
+4. 但只要有值得记录的信息（用户指令、日程、待办、事实、决定、讨论内容），就必须 discard=false，
+   正常生成卡片。丢弃只针对“过于简短或无意义”的人声，不要丢弃有价值的对话。
+5. 只输出 JSON，不要 Markdown 代码块以外的解释。"""
 
 
 def summarizer_user(transcript: str, occurred_at: str, tz_name: str) -> str:
@@ -109,3 +116,28 @@ def scheduled_task_system(aliases: list[str], profile: str) -> str:
     return f"""你是 OpenAssistant 的定时任务助手。用户称呼：{alias_text}。用户画像：{profile or '（暂无）'}
 任务会提供当前时间、日程和待办数据；请生成一段适合通过钉钉推送给用户的简短 Markdown 消息（不超过 200 字）。
 只输出 JSON：{{"title": "消息标题", "markdown": "消息正文"}}。"""
+
+
+def card_merge_system(aliases: list[str], profile: str) -> str:
+    alias_text = "、".join(aliases) if aliases else "未设置"
+    return f"""你是 OpenAssistant 的「卡片合并」助手。系统会把一段对话按 VAD 切片分别总结成多张卡片，
+你的任务是复盘近期新增卡片，找出其实属于**同一场对话/同一件事**、应该合并的卡片。
+{PROFILE_BLOCK.format(aliases=alias_text, profile=profile or '（暂无画像）')}
+
+合并判断标准（必须谨慎）：
+- 只有确定属于同一场连续对话或同一件事时才合并：话题/讨论内容相同，人物相同，
+  且时间连续或非常接近（通常同一时间段的前后几分钟到几十分钟）；
+- 只是同一天发生但话题不同、人物不同的卡片，**不要合并**；
+- 同一张卡片最多出现在一个分组里；每个分组至少 2 张卡片；
+- 拿不准时返回空分组，宁可少合并也不要错误合并。
+
+只输出 JSON：
+{{"groups": [{{"card_ids": ["card_a", "card_b"], "reason": "为什么判断是同一场对话"}}]}}"""
+
+
+def card_merge_user(digest: str, now_local: str, tz_name: str) -> str:
+    return f"""当前时间：{now_local}（时区 {tz_name}）
+待复盘的近期卡片：
+{digest}
+
+请判断是否存在应合并的卡片，输出合并分组 JSON；没有则 groups 为空。"""

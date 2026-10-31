@@ -10,8 +10,9 @@ from sqlalchemy import String, cast, or_, select
 
 from ..deps import CurrentUser, DbSession, ProvidersDep
 from ..models import Card, CardCorrection, TranscriptTurn
-from ..schemas import CardPatch
+from ..schemas import CardMergeIn, CardPatch
 from ..serializers import card_detail, card_list_item, parse_dt
+from ..services.card_merge import merge_cards_by_ids
 from ..services.corrections import apply_correction, delete_card, restore_card
 
 router = APIRouter(tags=["cards"])
@@ -98,6 +99,32 @@ def list_cards(
         last = rows[-1]
         next_cursor = _encode_cursor(f"{last.occurred_at.isoformat()}|{last.id}")
     return {"items": items, "next_cursor": next_cursor}
+
+
+@router.post("/cards/merge")
+def merge_cards(payload: CardMergeIn, user: CurrentUser, db: DbSession, providers: ProvidersDep) -> dict:
+    """手动合并选中的多张卡片并重新总结（App「合并对话」）。"""
+    try:
+        outcome = merge_cards_by_ids(user.id, payload.card_ids, providers, note=payload.note)
+    except ValueError as exc:
+        detail = str(exc)
+        status = {
+            "card_not_found": 404,
+            "user_missing": 404,
+            "too_few_cards": 422,
+            "merge_rejected": 422,
+            "card_deleted": 409,
+            "cannot_merge_meeting_cards": 409,
+        }.get(detail, 409)
+        raise HTTPException(status_code=status, detail=detail) from exc
+    db.expire_all()
+    card = db.get(Card, outcome["primary_card_id"])
+    if card is None:
+        raise HTTPException(status_code=404, detail="card_not_found")
+    detail = card_detail(db, card)
+    detail["merged_card_ids"] = outcome["merged_card_ids"]
+    detail["merge_reason"] = outcome["reason"]
+    return detail
 
 
 @router.get("/cards/{card_id}")

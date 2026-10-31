@@ -13,7 +13,13 @@ from ..db import session_scope
 from ..models import User
 from ..providers import Providers, get_providers
 from ..utils import iso_utc, now_utc
-from .pipeline import pending_segment_ids, process_segment, requeue_stuck_segments
+from .card_merge import merge_recent_cards
+from .pipeline import (
+    flush_transcribed_conversations,
+    pending_segment_ids,
+    requeue_stuck_segments,
+    transcribe_segment,
+)
 from .profile import refresh_profile
 from .push_service import drain_outbox
 from .scheduler import SchedulerService, get_scheduler, send_due_reminders
@@ -48,6 +54,9 @@ class BackgroundWorker:
         self.last_error: str | None = None
         self.processed_total = 0
         self.ticks = 0
+        self._card_merge_last_s = 0.0
+        self.last_card_merge_at: datetime | None = None
+        self.last_card_merge_result: dict | None = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
     @property
@@ -114,6 +123,13 @@ class BackgroundWorker:
             "last_tick_age_s": round(time.time() - self.last_tick_s, 1) if self.last_tick_s else None,
             "poll_seconds": self.settings.job_poll_seconds,
             "last_error": self.last_error,
+            "card_merge": {
+                "enabled": bool(self.settings.card_merge_enabled),
+                "interval_s": self.settings.card_merge_interval_s,
+                "lookback_s": self.settings.card_merge_lookback_s,
+                "last_run_at": iso_utc(self.last_card_merge_at),
+                "last_merged": int((self.last_card_merge_result or {}).get("merged", 0)),
+            },
         }
 
     # ── loop ─────────────────────────────────────────────────────────────
@@ -128,19 +144,50 @@ class BackgroundWorker:
             self._stop.wait(max(0.2, self.settings.job_poll_seconds))
 
     def tick(self) -> dict:
-        result = {"processed": 0, "pushed": 0, "reminded": 0, "profiles": 0}
+        # 两阶段：先转写新片段，再统一总结「等待窗口已到、时间相近」的对话。
+        # 转写阶段不阻塞在“等待”上，因此等待期间新的音频仍能及时转写。
+        result = {"transcribed": 0, "processed": 0, "cards": 0, "pushed": 0, "reminded": 0, "profiles": 0}
         for segment_id in pending_segment_ids(limit=3):
-            outcome = process_segment(segment_id, self.providers)
-            if outcome.get("status") in {"done", "failed"}:
-                result["processed"] += 1
+            outcome = transcribe_segment(segment_id, self.providers)
+            if outcome.get("status") in {"transcribed", "done", "failed"}:
+                result["transcribed"] += 1
+        for summary in flush_transcribed_conversations(self.providers):
+            result["cards"] += 1 if summary.get("card_id") else 0
+            result["processed"] += int(summary.get("segments", 1))
         result["pushed"] = self._drain_push()
         result["reminded"] = send_due_reminders(self.providers)
+        ai_merge = self._maybe_ai_merge()
+        if ai_merge is not None:
+            result["ai_merged"] = int(ai_merge.get("merged", 0))
         result["profiles"] = self._refresh_dirty_profiles()
         self.ticks += 1
         self.processed_total += int(result["processed"])
         self.last_tick_at = now_utc()
         self.last_tick_s = time.time()
         return result
+
+    def _maybe_ai_merge(self) -> dict | None:
+        """按 ``OA_CARD_MERGE_INTERVAL_S`` 节流地让 AI 复盘并合并近期卡片。"""
+        if not self.settings.card_merge_enabled:
+            return None
+        now_s = time.time()
+        if now_s - self._card_merge_last_s < max(1.0, self.settings.card_merge_interval_s):
+            return None
+        self._card_merge_last_s = now_s
+        try:
+            outcome = merge_recent_cards(self.providers)
+        except Exception:  # noqa: BLE001 - 合并失败不影响录音主流程
+            logger.exception("AI card merge tick failed")
+            return None
+        self.last_card_merge_at = now_utc()
+        self.last_card_merge_result = outcome
+        if outcome.get("merged"):
+            logger.info(
+                "AI card merge: %s group(s), %s card(s) merged",
+                len(outcome.get("groups") or []),
+                outcome.get("merged"),
+            )
+        return outcome
 
     def _drain_push(self) -> int:
         with session_scope() as db:

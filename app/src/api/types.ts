@@ -75,6 +75,9 @@ export interface CardSummary {
   occurred_at: string;
   duration_s: number;
   audio_url: string | null;
+  /** 合并对话可能对应多个音频片段（服务端新字段，旧数据可能没有） */
+  audio_segment_ids?: string[];
+  audio_urls?: string[];
   audio_available: boolean;
   labels: CardLabels;
   meeting_id: string | null;
@@ -172,6 +175,12 @@ export interface CardDeleteResult {
   deleted: boolean;
   cascaded: { schedule: number; todos: number; meetings: number };
   profile_dirty: boolean;
+}
+
+/** 手动合并多张卡片并重新总结的响应：返回合并后的主卡片详情。 */
+export interface CardMergeResult extends CardDetail {
+  merged_card_ids: string[];
+  merge_reason: string;
 }
 
 export interface ScheduleCreate {

@@ -263,6 +263,25 @@ export function useDeleteCard() {
   });
 }
 
+export function useMergeCards() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ cardIds, note }: { cardIds: string[]; note?: string }) =>
+      api.mergeCards(cardIds, note),
+    onSuccess: () => {
+      invalidate(client, [
+        ['cards'],
+        ['card'],
+        queryKeys.allSchedule,
+        queryKeys.allTodos,
+        ['meetings'],
+        queryKeys.profile,
+        ['audit'],
+      ]);
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // 会议
 // ---------------------------------------------------------------------------

@@ -8,12 +8,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import prompts
-from ..config import get_settings
+from ..config import default_timezone, get_settings
 from ..models import Card, TranscriptTurn, User
 from ..providers import Providers
 from ..providers.llm import extract_json
 from ..utils import now_utc
 from .align import Turn
+from .timeparse import to_local
 
 
 def _recent_cards(db: Session, user: User, limit: int = 8) -> list[Card]:
@@ -38,8 +39,9 @@ def empty_profile() -> str:
 
 def profile_digest(db: Session, user: User, limit: int = 8) -> str:
     lines: list[str] = []
+    tz_name = user.timezone or default_timezone()
     for card in _recent_cards(db, user, limit):
-        day = card.occurred_at.strftime("%Y-%m-%d") if card.occurred_at else ""
+        day = to_local(card.occurred_at, tz_name).strftime("%Y-%m-%d") if card.occurred_at else ""
         user_quotes = [t.text for t in _card_turns(db, card) if t.speaker == "user"][:3]
         quote = "；".join(user_quotes)[:220]
         lines.append(f"- [{day}] {card.title}：{card.summary[:160]}" + (f"（原话：{quote}）" if quote else ""))

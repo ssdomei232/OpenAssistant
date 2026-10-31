@@ -1,22 +1,49 @@
 """Meeting detection and minutes generation."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import prompts
-from ..config import get_settings
+from ..config import default_timezone, get_settings
 from ..models import Card, Meeting, Todo, User
 from ..providers import Providers
 from ..providers.llm import extract_json
 from ..utils import now_utc
 from .align import Turn, transcript_text
+from .timeparse import to_local
 
 DECISION_MARKERS = ("决定", "确定", "定了", "结论", "同意", "就这么", "拍板", "统一")
 ACTION_MARKERS = ("负责", "跟进", "我来", "你来", "记得", "需要", "安排", "提交", "发我", "整理")
 RULE_STOP = {"我们", "这个", "那个", "然后", "可以", "就是", "一个"}
+
+
+def _user_tz(user: User) -> str:
+    return user.timezone or default_timezone()
+
+
+def _local(user: User, dt: datetime) -> datetime:
+    """naive UTC → 用户本地时间（会议纪要/提示词里的时间必须是本地时间）。"""
+    return to_local(dt, _user_tz(user))
+
+
+def _local_str(user: User, dt: datetime) -> str:
+    return _local(user, dt).strftime("%Y-%m-%d %H:%M")
+
+
+def _format_due(user: User, value) -> str:
+    """把 datetime / ISO 字符串按用户时区格式化；无法解析时原样返回。"""
+    if not value:
+        return ""
+    dt = value
+    if not isinstance(dt, datetime):
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return str(value)
+    return _local_str(user, dt)
 
 
 def _alias_name(user: User) -> str:
@@ -58,7 +85,7 @@ def _rule_minutes(user: User, card: Card, turns: list[Turn]) -> dict:
     if not decisions:
         decisions = ["本次会议未记录明确决议。"]
 
-    markdown_lines = [f"## {card.title or '会议纪要'}", "", f"**时间**：{card.occurred_at.isoformat()}"]
+    markdown_lines = [f"## {card.title or '会议纪要'}", "", f"**时间**：{_local_str(user, card.occurred_at)}"]
     markdown_lines.append(f"**参与者**：{_alias_name(user)}、其他说话人")
     markdown_lines.append("")
     markdown_lines.append("### 摘要")
@@ -75,7 +102,7 @@ def _rule_minutes(user: User, card: Card, turns: list[Turn]) -> dict:
     markdown_lines.append("### 行动项")
     for item in action_items:
         owner = f"（{item['owner']}）" if item.get("owner") else ""
-        due = f"，截止 {item['due_at']}" if item.get("due_at") else ""
+        due = f"，截止 {_format_due(user, item['due_at'])}" if item.get("due_at") else ""
         markdown_lines.append(f"- [ ] {item['text']}{owner}{due}")
     return {
         "summary": card.summary,
@@ -97,7 +124,7 @@ def _llm_minutes(user: User, card: Card, turns: list[Turn], providers: Providers
     try:
         raw = providers.llm.complete(
             prompts.meeting_system(user.aliases or [], user.profile_text or ""),
-            f"会议时间：{card.occurred_at.isoformat()}\n标题：{card.title}\n\n{transcript_text(turns)}",
+            f"会议时间：{_local_str(user, card.occurred_at)}\n标题：{card.title}\n\n{transcript_text(turns)}",
             temperature=0.2,
             max_tokens=1800,
         )
@@ -120,7 +147,7 @@ def _llm_minutes(user: User, card: Card, turns: list[Turn], providers: Providers
 def _minutes_markdown(user: User, card: Card, payload: dict) -> str:
     if payload.get("minutes_markdown"):
         return payload["minutes_markdown"]
-    lines = [f"## {payload.get('title') or card.title or '会议纪要'}", "", f"**时间**：{card.occurred_at.isoformat()}"]
+    lines = [f"## {payload.get('title') or card.title or '会议纪要'}", "", f"**时间**：{_local_str(user, card.occurred_at)}"]
     participants = payload.get("participants") or build_participants(user, card)
     lines.append("**参与者**：" + "、".join(p.get("name", "") for p in participants if isinstance(p, dict)))
     lines += ["", "### 摘要", payload.get("summary") or card.summary or ""]
@@ -141,7 +168,7 @@ def _minutes_markdown(user: User, card: Card, payload: dict) -> str:
         for item in actions:
             if isinstance(item, dict):
                 owner = f"（{item.get('owner')}）" if item.get("owner") else ""
-                due = f"，截止 {item.get('due_at')}" if item.get("due_at") else ""
+                due = f"，截止 {_format_due(user, item.get('due_at'))}" if item.get("due_at") else ""
                 lines.append(f"- [ ] {item.get('text', '')}{owner}{due}")
     return "\n".join(lines)
 
@@ -259,7 +286,7 @@ def regenerate_minutes(db: Session, user: User, meeting: Meeting, providers: Pro
         try:
             raw = providers.llm.complete(
                 prompts.meeting_system(user.aliases or [], user.profile_text or ""),
-                f"会议时间：{meeting.started_at.isoformat()}\n标题：{meeting.title}\n\n{transcript}",
+                f"会议时间：{_local_str(user, meeting.started_at)}\n标题：{meeting.title}\n\n{transcript}",
                 temperature=0.2,
                 max_tokens=1800,
             )

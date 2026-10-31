@@ -73,6 +73,8 @@ def segment_out(segment: AudioSegment) -> dict:
         "status": segment.status,
         "error": segment.error,
         "card_id": segment.card_id,
+        # 被 AI/规则判定丢弃的片段（过于简短或无意义的人声）会在 meta.discard 里带原因
+        "discard": (segment.meta or {}).get("discard"),
         "duration_s": segment.duration_s,
         # 上传端原始采样率（内部处理统一重采样到 16 kHz）
         "sample_rate": segment.sample_rate,
@@ -96,7 +98,16 @@ def _audio_available(db: Session | None, card: Card) -> bool:
         return False
 
 
+def card_audio_segment_ids(card: Card) -> list[str]:
+    """合并对话可能对应多个音频片段；优先返回 source_meta 中的完整列表。"""
+    ids = (card.source_meta or {}).get("audio_segment_ids")
+    if isinstance(ids, list) and ids:
+        return [str(segment_id) for segment_id in ids]
+    return [card.audio_segment_id] if card.audio_segment_id else []
+
+
 def card_list_item(card: Card, db: Session | None = None) -> dict:
+    audio_ids = card_audio_segment_ids(card)
     return {
         "id": card.id,
         "title": card.title,
@@ -107,6 +118,8 @@ def card_list_item(card: Card, db: Session | None = None) -> dict:
         "occurred_at": iso_utc(card.occurred_at),
         "duration_s": card.duration_s,
         "audio_url": f"/api/v1/audio/{card.audio_segment_id}/file" if card.audio_segment_id else None,
+        "audio_segment_ids": audio_ids,
+        "audio_urls": [f"/api/v1/audio/{segment_id}/file" for segment_id in audio_ids],
         "audio_available": _audio_available(db, card),
         "labels": {"user_turns": card.user_turns, "other_turns": card.other_turns},
         "meeting_id": card.meeting_id,

@@ -14,13 +14,13 @@ Run with ``OA_DEMO_MODE=1 python -m app.cli seed-demo``.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .config import get_settings
+from .config import default_timezone, get_settings
 from .models import AuditLog, AudioSegment, Card, Command, Device, Meeting, ScheduleItem, ScheduledJob, Todo, User
 from .providers import get_providers
 from .providers.speaker import SpectralEmbedding
@@ -49,8 +49,8 @@ OTHER_AUDIO = _tone_audio(freqs=(300.0, 600.0, 900.0))
 
 
 def _local_now(tz_name: str) -> datetime:
-    aware = now_utc().replace(tzinfo=tzinfo_for(tz_name))
-    return aware
+    # 先把「当前 UTC 时刻」转到用户本地时区（之前直接 replace 会把 UTC 时钟当成本地时间）
+    return datetime.now(timezone.utc).astimezone(tzinfo_for(tz_name))
 
 
 def _iso(aware: datetime) -> str:
@@ -151,7 +151,7 @@ def seed_demo(db: Session, api_key: str | None = None) -> dict:
     # demo transcripts are only honoured while demo mode is on
     settings.demo_mode = True
     user, created_key = _find_or_create_user(db, api_key)
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = user.timezone or default_timezone()
     now_local = _local_now(tz_name)
     providers = get_providers()
     report: dict = {"user_id": user.id, "api_key": created_key, "cards": [], "meetings": 0, "corrections": 0, "deleted": 0}

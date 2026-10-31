@@ -176,32 +176,61 @@ class PyAnnoteEmbedding:
     def embed(self, samples: np.ndarray, sr: int) -> list[float]:
         import torch  # type: ignore
 
+        from .numerics import quiet_numerical_warnings
+
         inference = self._inference or self._load()
         waveform = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0)
-        try:
-            embedding = inference({"waveform": waveform, "sample_rate": sr})
-        except (TypeError, ValueError):
-            # pyannote 4 只保证文件路径输入：写临时 wav 兜底
-            path = self._temp_wav(samples, sr)
+        with quiet_numerical_warnings():
             try:
-                embedding = inference(path)
-            finally:
+                embedding = inference({"waveform": waveform, "sample_rate": sr})
+            except (TypeError, ValueError):
+                # pyannote 4 只保证文件路径输入：写临时 wav 兜底
+                path = self._temp_wav(samples, sr)
                 try:
-                    os.unlink(path)
-                except OSError:  # pragma: no cover
-                    pass
+                    embedding = inference(path)
+                finally:
+                    try:
+                        os.unlink(path)
+                    except OSError:  # pragma: no cover
+                        pass
         vector = np.asarray(embedding, dtype=np.float64).reshape(-1)
         norm = np.linalg.norm(vector)
         return (vector / norm).tolist() if norm else vector.tolist()
 
 
 # ── identification ────────────────────────────────────────────────────────
-def embed_for(samples: np.ndarray, sr: int, start: float, end: float, provider: Any) -> list[float]:
+MIN_EMBED_SECONDS = 0.5
+
+
+def embed_for(
+    samples: np.ndarray,
+    sr: int,
+    start: float,
+    end: float,
+    provider: Any,
+    min_seconds: float = MIN_EMBED_SECONDS,
+) -> list[float]:
+    """Embed one diarized segment, padding ultra-short chunks.
+
+    pyannote embedding 在 <0.2s 的输入上时间维可能只剩 1 帧，导致池化
+    ``std(correction=1)`` 与空均值告警、embedding 也失去意义。这里用反射填充把
+    过短片段补到 ``min_seconds``，既避免噪声告警，也尽量保留同一说话人的频谱特征。
+    """
+    audio = np.asarray(samples, dtype=np.float32)
+    if audio.size == 0:
+        return provider.embed(audio, sr)
+    min_samples = max(1, int(min_seconds * sr))
     a = max(0, int(start * sr))
-    b = min(samples.size, int(end * sr))
-    chunk = np.asarray(samples[a:b], dtype=np.float32)
-    if chunk.size < int(0.12 * sr):
-        chunk = np.asarray(samples, dtype=np.float32)
+    b = min(audio.size, int(end * sr))
+    if b <= a:
+        a, b = 0, audio.size
+    chunk = audio[a:b]
+    if chunk.size < min_samples:
+        pad = min_samples - chunk.size
+        if chunk.size >= 2:
+            chunk = np.pad(chunk, (0, pad), mode="reflect")
+        else:
+            chunk = np.pad(chunk, (0, pad), mode="constant")
     return provider.embed(chunk, sr)
 
 
@@ -214,6 +243,7 @@ def identify(
     threshold: float = 60.0,
     cluster_threshold: float = 0.72,
     max_other_speakers: int = 6,
+    min_embed_seconds: float = MIN_EMBED_SECONDS,
 ) -> list[SpeakerIdentity]:
     """Assign ``user``/``other``/``unknown`` to each diarized segment.
 
@@ -226,7 +256,17 @@ def identify(
     emb_cache: list[np.ndarray] = []
     raw: list[dict[str, Any]] = []
     for seg in diarization:
-        emb = np.asarray(embed_for(samples, sr, seg.start, seg.end, embedding_provider), dtype=np.float64)
+        emb = np.asarray(
+            embed_for(
+                samples,
+                sr,
+                seg.start,
+                seg.end,
+                embedding_provider,
+                min_seconds=min_embed_seconds,
+            ),
+            dtype=np.float64,
+        )
         norm = np.linalg.norm(emb)
         emb = emb / norm if norm else emb
         emb_cache.append(emb)

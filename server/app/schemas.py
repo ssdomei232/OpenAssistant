@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .config import default_timezone, normalize_timezone
 
 
 class MePatch(BaseModel):
@@ -32,6 +34,11 @@ class CardPatch(BaseModel):
     people: list[str] | None = None
     type: Literal["conversation", "meeting", "media", "other"] | None = None
     note: str = ""
+
+
+class CardMergeIn(BaseModel):
+    card_ids: list[str] = Field(min_length=2, max_length=20)
+    note: str = Field(default="", max_length=300)
 
 
 class ScheduleIn(BaseModel):
@@ -88,10 +95,15 @@ class ScheduledJobIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     cron: str | None = None
     run_at: str | None = None
-    timezone: str = "Asia/Shanghai"
+    timezone: str = Field(default_factory=default_timezone)
     prompt: str = Field(default="", max_length=4000)
     action: Literal["agent", "push", "command"] = "agent"
     enabled: bool = True
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str) -> str:
+        return normalize_timezone(value)
 
 
 class ScheduledJobPatch(BaseModel):
@@ -102,6 +114,11 @@ class ScheduledJobPatch(BaseModel):
     prompt: str | None = None
     action: Literal["agent", "push", "command"] | None = None
     enabled: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str | None) -> str | None:
+        return normalize_timezone(value) if value is not None else None
 
 
 class PushTestIn(BaseModel):

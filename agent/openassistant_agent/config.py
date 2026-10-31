@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:  # Python >= 3.11
     import tomllib as _tomllib
@@ -31,20 +34,35 @@ except ModuleNotFoundError:  # pragma: no cover - 3.10 回退
 __all__ = [
     "AgentConfig",
     "ConfigError",
+    "DEFAULT_TIMEZONE",
     "RecordConfig",
     "UploadConfig",
     "VadConfig",
     "default_config_path",
     "default_data_dir",
     "load_config",
+    "normalize_timezone",
 ]
 
 APP_NAME = "openassistant"
 SAMPLE_RATES = (8000, 16000, 32000, 48000)
+DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
 class ConfigError(ValueError):
     """配置非法或无法读写。"""
+
+
+def normalize_timezone(name: str | None) -> str:
+    """校验并规范化 IANA 时区名，非法时抛 :class:`ConfigError`。"""
+    value = (name or "").strip() or DEFAULT_TIMEZONE
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(
+            f"invalid timezone {value!r}: 请使用 IANA 时区名，例如 {DEFAULT_TIMEZONE}、UTC"
+        ) from exc
+    return value
 
 
 def default_config_path() -> Path:
@@ -133,7 +151,7 @@ class UploadConfig:
 # 主配置
 # ---------------------------------------------------------------------------
 
-_TOP_LEVEL = ("server_url", "api_key", "device_id", "spool_path", "log_level")
+_TOP_LEVEL = ("server_url", "api_key", "device_id", "spool_path", "log_level", "timezone")
 
 # 顶层磁盘/JSON 键 -> (section, field) 别名（App 的 PUT /devices/{id}/config 使用扁平键）
 _FLAT_ALIASES: dict[str, tuple[str | None, str]] = {
@@ -155,6 +173,8 @@ _ENV_MAP: dict[str, tuple[str | None, str]] = {
     "OA_DEVICE_ID": (None, "device_id"),
     "OA_SPOOL_PATH": (None, "spool_path"),
     "OA_LOG_LEVEL": (None, "log_level"),
+    "OA_TIMEZONE": (None, "timezone"),
+    "OA_TZ": (None, "timezone"),
     "OA_RECORD_DEVICE": ("record", "device"),
     "OA_RECORD_SAMPLE_RATE": ("record", "sample_rate"),
     "OA_RECORD_CHANNELS": ("record", "channels"),
@@ -200,10 +220,39 @@ class AgentConfig:
     device_id: str = "pi-openassistant"
     spool_path: str = field(default_factory=lambda: str(default_data_dir()))
     log_level: str = "INFO"
+    # Agent 运行时区（IANA 名称）。systemd 常以 UTC 启动进程，若不配置会导致
+    # recorded_at / client_segment_id / 日志时间都是 UTC；这里显式指定本地时区。
+    timezone: str = DEFAULT_TIMEZONE
     record: RecordConfig = field(default_factory=RecordConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     upload: UploadConfig = field(default_factory=UploadConfig)
     config_path: str = ""  # 实际生效的配置文件路径（不参与序列化）
+
+    # -- 时区 ------------------------------------------------------------
+    @property
+    def tzinfo(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone)
+
+    def now_local(self) -> datetime:
+        """当前时间（带配置时区），不受 systemd/宿主进程 TZ 影响。"""
+        return datetime.now(self.tzinfo)
+
+    def apply_timezone(self) -> None:
+        """把配置时区应用到当前进程（``TZ`` + ``tzset``），让日志本地时间正确。
+
+        ``datetime.now().astimezone()`` 与 ``logging`` 默认使用进程本地时区；
+        systemd 下常为 UTC，因此启动时把进程时区切到 ``timezone``。
+        Windows 没有 ``time.tzset``（Agent 部署在树莓派，仅开发机如此），此时只设置
+        环境变量；运行时时间戳已改为显式使用 :meth:`now_local`，仍然正确。
+        """
+        self.timezone = normalize_timezone(self.timezone)
+        os.environ["TZ"] = self.timezone
+        tzset = getattr(time, "tzset", None)
+        if tzset is not None:  # pragma: no branch - POSIX 才存在
+            try:
+                tzset()
+            except (OSError, ValueError):  # pragma: no cover - 个别平台不支持
+                pass
 
     # -- 序列化 ----------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -336,6 +385,7 @@ class AgentConfig:
 
     # -- 校验 ------------------------------------------------------------
     def validate(self) -> None:
+        self.timezone = normalize_timezone(self.timezone)
         if not (0 <= self.record.block_ms <= 1000):
             raise ConfigError("record.block_ms must be within 0..1000")
         if self.record.sample_rate not in SAMPLE_RATES:

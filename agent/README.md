@@ -137,6 +137,7 @@ sudo chmod 600 /etc/openassistant/agent.toml          # 含 API Key
 server_url = "https://your-server.example.com"
 api_key = "YOUR_API_KEY"
 device_id = "pi-livingroom"
+timezone = "Asia/Shanghai"      # systemd 下若系统是 UTC，务必显式配置本地时区
 
 [record]
 device = "DJI Mic Mini"
@@ -170,6 +171,7 @@ sudo tee /etc/openassistant/agent.env >/dev/null <<'EOF'
 # 覆盖 TOML 中的同名配置（OA_* 优先）
 # OA_SERVER_URL=https://your-server.example.com
 # OA_LOG_LEVEL=DEBUG
+# OA_TIMEZONE=Asia/Shanghai
 EOF
 sudo chmod 600 /etc/openassistant/agent.env
 ```
@@ -210,6 +212,25 @@ python -m openassistant_agent ble-serve --mock
 ```
 
 Windows 开发机安装 `bless` 后同样可以起 GATT Server（需蓝牙 4.0+ 适配器）。
+
+### 2.7 时区（systemd 下默认 UTC）
+
+`systemd` 启动的服务默认继承系统时区；树莓派常未配置 `/etc/timezone`，此时进程是 UTC，
+会导致 `recorded_at`、`client_segment_id` 和日志时间都显示为 UTC。Agent 增加了显式时区配置：
+
+```toml
+# /etc/openassistant/agent.toml
+timezone = "Asia/Shanghai"    # IANA 名称；也支持 UTC、America/New_York 等
+```
+
+- Agent 启动时会把该时区应用到进程（设置 `TZ` 并调用 `tzset`），日志与本地时间随之正确；
+- `recorded_at` / `client_segment_id` **显式按配置时区生成**，即使进程 TZ 是 UTC 也不会偏移；
+- 也可用环境变量覆盖（优先级高于 TOML）：`OA_TIMEZONE=Asia/Shanghai`（兼容 `OA_TZ`）；
+- 临时覆盖一次运行：`python -m openassistant_agent --timezone UTC run`；
+- 修改已有配置：`python -m openassistant_agent config set timezone Asia/Shanghai`。
+
+> Server 端也有独立时区配置（`OA_TIMEZONE`）。两边时区不一致不会导致数据错乱
+> （上传时间带时区偏移，Server 会统一换算成 UTC 存储），但建议保持一致，排查问题时更直观。
 
 ---
 
@@ -317,20 +338,21 @@ python -m pytest agent/tests -q
 ## 5. CLI
 
 ```bash
-python -m openassistant_agent [--config PATH] [--log-level LEVEL] <command>
+python -m openassistant_agent [--config PATH] [--log-level LEVEL] [--timezone TZ] <command>
 
 run         [--source device|file|synthetic] [--input demo.wav] [--duration 10]
             [--max-blocks N] [--no-upload] [--upload-interval 10] [--no-signals]
 status      [--json]                     # 配置 + 队列统计
 flush       [--limit N] [--max-rounds 5] [--json]
 config get [KEY] [--json]                # KEY 支持点号路径，如 upload.retry_max
-config set KEY VALUE [--json]            # 写回 TOML
+config set KEY VALUE [--json]            # 写回 TOML，如 config set timezone Asia/Shanghai
 config path
 selftest    [--workdir DIR] [--keep] [--json]
 ble-serve   [--name OpenAssistant] [--adapter hci0] [--mock] [--duration N]
 ```
 
 环境变量覆盖示例：`OA_SERVER_URL`、`OA_API_KEY`、`OA_DEVICE_ID`、`OA_SPOOL_PATH`、
+`OA_TIMEZONE`（或 `OA_TZ`）、
 `OA_VAD_AGGRESSIVENESS`、`OA_UPLOAD_RETRY_MAX`、`OA_UPLOAD_OFFLINE_BUFFER`、
 `OA_RECORD_DEVICE`、`OA_RECORD_SAMPLE_RATE`、`OA_RECORD_SOURCE`、`OA_RECORD_INPUT`、
 `OA_RECORD_LATENCY`、`OA_RECORD_INPUT_QUEUE_BLOCKS`、
@@ -375,6 +397,7 @@ ble-serve   [--name OpenAssistant] [--adapter hci0] [--mock] [--duration N]
 | `sounddevice is not installed` | 安装 `sounddevice`，或在开发时用 `--source file/synthetic` |
 | `audio input device matching 'DJI Mic Mini' not found` | `arecord -l` 确认真实名称，修改 `record.device` 或改短关键字 |
 | 一直 `PortAudio: Device unavailable` / 掉线 | USB 供电不足；换 Hub/电源，`dmesg` 查看 USB 断连 |
+| 日志 / `recorded_at` 显示 UTC（比本地少 8 小时） | systemd 下进程默认继承系统时区（常见为 UTC）。在 `agent.toml` 设置 `timezone = "Asia/Shanghai"`（或 `OA_TIMEZONE`），重启服务；见「2.7 时区」 |
 | 录到 48 kHz 数据或采样率报错 | 可直接把 `record.sample_rate` 设为 `48000`（支持 8/16/32/48 kHz）；也可用 `plughw:`、PulseAudio/PipeWire 重采样。Server 会自动把 48 kHz 转成 16 kHz 处理 |
 | `audio input overflow` 警告 | 见「2.3 录音实时性与 input overflow」：加大 `record.latency` / `record.input_queue_blocks`、换带电源 USB Hub、降低采样率、关闭 WiFi 省电 |
 | 上传/存储体积过大 | 48 kHz 体积约为 16 kHz 的 3 倍；把 `record.sample_rate` 改回 16000，或调小 `vad.max_segment_s` |

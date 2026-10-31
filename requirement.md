@@ -23,7 +23,7 @@ Agent 上传的每个含人声片段，进入 Server 后按以下顺序处理：
 
 1. **说话人分离（Diarization）**：使用 pyannote.audio，输出带时间戳的匿名说话人片段（SPEAKER_00、SPEAKER_01…）。
 2. **声纹匹配（Speaker Identification）**：提取每个说话人片段的声纹特征，与用户预先注册的声纹比对。相似度超阈值的标记为 `[使用者]`，其余标记为 `[其他人]` 或 `[未知]`。声纹注册为一次性操作：用户录 10–30 秒干净语音，生成 voiceprint 存入数据库，与用户账号关联。阈值初期设保守值（如 60），避免把其他人误判为使用者而误触发指令。
-3. **ASR 转写**：使用 faster-whisper（large-v3 或 large-v3-turbo），输出带词级时间戳的文本。A4000 显存足够，可与 pyannote 串行执行。
+3. **ASR 转写**：使用 FunASR（Paraformer-zh 中文模型 + FSMN-VAD + CT-Punc 标点恢复），输出带词级时间戳的文本。A4000 显存足够，可与 pyannote 串行执行。
 4. **时间戳对齐与标签融合**：将 ASR 词级时间戳与说话人时间区间做重叠匹配，给每段文本打上 `[使用者]` / `[其他人]` 标签，输出带身份标签的转写文本。
 
 ### 3.2 AI 总结与卡片
@@ -92,7 +92,7 @@ Server 端为 AI 提供定时任务系统：时间到达时执行命令，可用
 
 - 说话人分离：pyannote.audio
 - 声纹识别：CAM++ 或 pyannote voiceprint 方案
-- ASR：faster-whisper（large-v3 / large-v3-turbo）
+- ASR：FunASR（Paraformer-zh + FSMN-VAD + CT-Punc）
 - 定时任务：APScheduler 或类似
 - 钉钉推送：钉钉自定义机器人 Webhook
 - 存储：关系型数据库（卡片、日程、画像、声纹、用户配置）+ 对象存储（音频文件）

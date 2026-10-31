@@ -45,9 +45,13 @@ OpenAssistant/
 |---|---|
 | 说话人分离 | `pyannote.audio`（生产）/ 能量 VAD 分段（离线兜底） |
 | 声纹识别 | 声纹注册（10–30s）→ embedding 余弦相似度 ×100，阈值默认 **60** 保守判定；未达阈值一律 `[其他人]`/`[未知]` |
-| ASR | `faster-whisper`（large-v3 / large-v3-turbo，词级时间戳），无 GPU 时 mock 兜底 |
+| ASR | `FunASR`（Paraformer-zh + FSMN-VAD + CT-Punc，词级时间戳、中文标点恢复），GPU 不可用时自动回退 CPU；依赖缺失时 mock 兜底 |
 | 标签融合 | 词级时间戳 × 说话人区间重叠归并成 turn，输出 `[使用者]`/`[其他人]`/`[未知]` |
 | AI 总结卡片 | 每段对话一张卡片：标题/摘要/关键信息/人物/类型/时间/原文/原始录音 |
+| 对话合并总结 | 转写完成后等待可配置窗口（默认 20s），把时间相近（间隔 ≤45s）的多个音频片段合并成一次对话、只生成一张卡片，避免 VAD 切片把同一段对话切碎 |
+| AI 复盘合并 | 后台每 5 分钟让 LLM 复盘近期新增卡片，话题相同/时间相近的卡片自动合并成一张并重新总结（软删除其余卡片、写审计、不重复执行日程/待办/指令） |
+| 手动合并对话 | App 历史记录页多选多张卡片，`POST /cards/merge` 合并成一张并重新总结；日程/待办改挂不重复执行，写 `card.merge` 审计 |
+| 低价值音频丢弃 | 过于简短/无意义的人声（只有语气词/应答、空语义短片段）由 AI 判断是否丢弃，不生成卡片；含指令/日程/待办或转写信息量足够的音频绝不丢弃 |
 | 日程与待办 | 仅从 `[使用者]` 发言抽取；支持中文口语时间（明天下午三点、下周一上午十点、周五之前…） |
 | 指令执行 | 仅 `[使用者]` 触发；加日程/查记忆/查数据/Web 搜索 → 钉钉推送 |
 | 搜索工具可切换 | Server 自实现搜索（DuckDuckGo HTML）或 DeepSeek 查询，App 内切换 |
@@ -56,8 +60,8 @@ OpenAssistant/
 | 多个称呼 | App 编辑 aliases，同步 Server 并进入提示词 |
 | 勘误与删除 | 卡片修订历史 + 审计日志；级联清理日程/待办/会议，重算画像；软删除可恢复 |
 | 会议纪要 | 多说话人长会话自动识别为会议，生成议题/决议/行动项/Markdown 纪要 |
-| Agent 录音端 | DJI Mic Mini USB 采集、VAD 切片、离线暂存、失败重传、BLE 管理通道；采样率支持 8/16/32/48 kHz（48 kHz 保留麦克风原始采样，Server 抗混叠重采样到 16 kHz 供 ASR/声纹使用） |
-| App 手机端 | Material Design 3、底部 Tab、待办首页、日程、历史卡片详情（ASR 原文 + 录音下载）、会议、画像、设置、BLE 设备管理 |
+| Agent 录音端 | DJI Mic Mini USB 采集、VAD 切片、离线暂存、失败重传、BLE 管理通道；采样率支持 8/16/32/48 kHz（48 kHz 保留麦克风原始采样，Server 抗混叠重采样到 16 kHz 供 ASR/声纹使用）；支持配置运行时时区（`agent.toml` 的 `timezone` / `OA_TIMEZONE`），systemd 为 UTC 时时间戳与日志仍为本地时间 |
+| App 手机端 | Material Design 3、底部 Tab、待办首页、日程、历史卡片详情（ASR 原文 + 录音下载 + 多选合并对话）、会议、画像、设置、BLE 设备管理 |
 
 ## 快速开始（本地演示，无需 GPU / API Key）
 
@@ -113,14 +117,25 @@ python -m openassistant_agent run --config /etc/openassistant/agent.toml
 
 详见 [`agent/README.md`](agent/README.md)。
 
+> Agent 时区：`agent.toml` 顶层 `timezone = "Asia/Shanghai"`（或环境变量 `OA_TIMEZONE`）决定
+> `recorded_at` / 片段 ID / 日志使用的时间。systemd 默认以 UTC 启动进程，树莓派上请显式配置本地时区；
+> 临时覆盖可用 `--timezone`，修改已有配置可用 `config set timezone Asia/Shanghai`。
+
 ## 生产部署（GPU 主机）
 
 ```bash
-pip install -r server/requirements-ai.txt   # faster-whisper + pyannote + torch
-cp server/.env.example server/.env          # 配置 HF token / DeepSeek / 钉钉
+# GPU 主机：先装 CUDA 版 torch（PyPI 默认是 CPU 版；cu 通道按 nvidia-smi 的 CUDA Version 选）
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu132
+pip install -r server/requirements-ai.txt   # FunASR + pyannote + torch 依赖
+cp server/.env.example server/.env          # 配置 HF token / DeepSeek / 钉钉 / 时区
 python -m app.cli create-user --name 小明   # 输出 API Key
+python -m app.cli doctor                    # 检查 gpu.cuda_available / providers.asr
 python -m app                              # 或 systemd / docker compose
 ```
+
+> 时区：`server/.env` 里的 `OA_TIMEZONE`（IANA 名称，默认 `Asia/Shanghai`）决定新建用户默认时区，
+> 并作为用户时区为空时的兜底；显式配置后重启会把已有用户同步过去，也可用
+> `python -m app.cli set-timezone Asia/Shanghai` 单独修改。App 内 `PATCH /me` 同样可改用户时区。
 
 完整步骤（HTTPS、Nginx、钉钉机器人、定时任务、备份）见 [`docs/deployment.md`](docs/deployment.md)。
 
@@ -132,13 +147,13 @@ python -m app                              # 或 systemd / docker compose
 ## 测试
 
 ```bash
-# Server（53 项）
+# Server（117 项）
 cd server && python -m pytest tests
 
-# Agent（76 项 + 1 skip，跳过项为未安装 webrtcvad 的适配器测试）
+# Agent（85 项 + 1 skip，跳过项为未安装 webrtcvad 的适配器测试）
 python -m pytest agent/tests
 
-# App（10 项 + 构建验证）
+# App（11 项 + 构建验证）
 cd app && pnpm test && pnpm build
 ```
 

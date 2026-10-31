@@ -3,8 +3,10 @@
 Usage:
     python -m app.cli create-user --name 小明 [--key oa_xxx]
     python -m app.cli list-users
+    python -m app.cli set-timezone Asia/Shanghai [--user-id usr_xxx]
     python -m app.cli seed-demo [--api-key oa_xxx] [--reset]
     python -m app.cli process-pending
+    python -m app.cli merge-cards [--lookback 1800] [--dry-run]
     python -m app.cli show-config
     python -m app.cli run [--host 0.0.0.0] [--port 8000]
 """
@@ -14,7 +16,7 @@ import argparse
 import json
 import sys
 
-from .config import get_settings
+from .config import get_settings, normalize_timezone
 from .db import SessionLocal, init_db
 from .models import User
 from .security import create_user
@@ -45,6 +47,37 @@ def cmd_list_users(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_timezone(args: argparse.Namespace) -> int:
+    """修改用户时区（不改 .env，适合快速纠正已有用户的历史数据）。"""
+    try:
+        tz_name = normalize_timezone(args.timezone)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    init_db()
+    with SessionLocal() as db:
+        if args.user_id:
+            users = [db.get(User, args.user_id)]
+            if users[0] is None:
+                print(f"user not found: {args.user_id}")
+                return 1
+        else:
+            users = list(db.query(User).all())
+        if not users:
+            print("(no users)")
+            return 0
+        for user in users:
+            user.timezone = tz_name
+        db.commit()
+        print(
+            json.dumps(
+                {"updated": len(users), "timezone": tz_name, "user_ids": [u.id for u in users]},
+                ensure_ascii=False,
+            )
+        )
+    return 0
+
+
 def cmd_seed_demo(args: argparse.Namespace) -> int:
     from .demo import seed_demo
 
@@ -62,16 +95,21 @@ def cmd_seed_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_process_pending(_args: argparse.Namespace) -> int:
-    from .services.pipeline import pending_segment_ids, process_segment, requeue_stuck_segments
+    from .services.pipeline import (
+        flush_transcribed_conversations,
+        pending_segment_ids,
+        requeue_stuck_segments,
+        transcribe_segment,
+    )
 
     init_db()
     recovered = requeue_stuck_segments()
-    processed = []
-    for segment_id in pending_segment_ids(limit=100):
-        processed.append(process_segment(segment_id))
+    transcribed = [transcribe_segment(segment_id) for segment_id in pending_segment_ids(limit=100)]
+    # 手动补处理时不等待合并窗口：把所有已转写片段按时间相邻关系立即统一总结
+    summarized = flush_transcribed_conversations(force=True)
     print(
         json.dumps(
-            {"requeued_stuck": recovered, "processed": processed},
+            {"requeued_stuck": recovered, "transcribed": transcribed, "summarized": summarized},
             ensure_ascii=False,
             indent=2,
             default=str,
@@ -98,8 +136,37 @@ def cmd_requeue_stuck(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _gpu_report() -> dict:
+    """torch/CUDA 诊断：GPU 是否对 torch 可见（ASR / 声纹模型都依赖它）。"""
+    try:
+        import torch  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        return {"torch": None, "error": f"{type(exc).__name__}: {exc}"}
+    info: dict = {"torch": torch.__version__, "torch_cuda": torch.version.cuda or None}
+    try:
+        available = bool(torch.cuda.is_available())
+    except Exception as exc:  # noqa: BLE001
+        available = False
+        info["error"] = f"{type(exc).__name__}: {exc}"
+    info["cuda_available"] = available
+    if available:
+        try:
+            count = torch.cuda.device_count()
+            info["device_count"] = count
+            info["devices"] = [torch.cuda.get_device_name(index) for index in range(count)]
+        except Exception:  # noqa: BLE001 - 设备名查询失败不影响主信息
+            pass
+    else:
+        info["hint"] = (
+            "torch 看不到 GPU：当前安装的是 CPU 版 wheel，或驱动与 CUDA 版本不匹配。"
+            "GPU 主机请安装 CUDA 版 torch，例如 "
+            "pip install torch --index-url https://download.pytorch.org/whl/cu132"
+        )
+    return info
+
+
 def cmd_doctor(_args: argparse.Namespace) -> int:
-    """打印服务端运行诊断：DB、provider 模式、队列计数。"""
+    """打印服务端运行诊断：DB、GPU、provider 模式、队列计数。"""
     from sqlalchemy import func, select
 
     from .db import SessionLocal
@@ -119,6 +186,7 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
         "storage_dir": str(settings.storage_dir),
         "scheduler_enabled": settings.scheduler_enabled,
         "worker_enabled": settings.worker_enabled,
+        "gpu": _gpu_report(),
         "providers": providers.modes,
         "audio_segments": {k: int(v) for k, v in counts.items()},
         "cards": int(cards),
@@ -128,21 +196,84 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_download_models(args: argparse.Namespace) -> int:
-    """预下载 faster-whisper 与 pyannote 模型（支持 HF 镜像，可断点续传）。"""
-    from huggingface_hub import snapshot_download
+def cmd_merge_cards(args: argparse.Namespace) -> int:
+    """让 AI 复盘近期卡片并合并同一对话（手动触发，用于补合并）。"""
+    from .services.card_merge import merge_recent_cards
 
+    init_db()
+    result = merge_recent_cards(
+        user_id=args.user_id,
+        lookback_s=args.lookback,
+        dry_run=args.dry_run,
+        force=True,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def _try_import(module: str) -> bool:
+    try:
+        __import__(module)
+        return True
+    except Exception:  # noqa: BLE001 - 依赖缺失/环境损坏都视为不可用
+        return False
+
+
+def _download_funasr_models(settings) -> list[str]:
+    """触发 FunASR 模型下载（ModelScope / HuggingFace，缓存到 OA_HF_HOME 或默认缓存）。"""
+    from funasr import AutoModel  # type: ignore
+
+    kwargs: dict[str, object] = {
+        "model": settings.funasr_model,
+        "hub": settings.funasr_hub,
+        "device": "cpu",
+        "disable_update": False,
+    }
+    if settings.funasr_vad_model:
+        kwargs["vad_model"] = settings.funasr_vad_model
+    if settings.funasr_punc_model:
+        kwargs["punc_model"] = settings.funasr_punc_model
+    print(
+        f"downloading [asr] funasr {settings.funasr_model} "
+        f"(vad={settings.funasr_vad_model or '-'}, punc={settings.funasr_punc_model or '-'}, hub={settings.funasr_hub}) ...",
+        flush=True,
+    )
+    AutoModel(**kwargs)
+    return [
+        name
+        for name in (settings.funasr_model, settings.funasr_vad_model, settings.funasr_punc_model)
+        if name
+    ]
+
+
+def cmd_download_models(args: argparse.Namespace) -> int:
+    """预下载 ASR（FunASR，或回退 faster-whisper）与 pyannote 模型。"""
     settings = get_settings()
     only = args.only
     repos: list[tuple[str, str, str | None]] = []
-    if only in ("all", "asr"):
-        try:
-            from faster_whisper.utils import _MODELS
+    failed: list[str] = []
 
-            repo = _MODELS.get(settings.whisper_model, settings.whisper_model)
-            repos.append(("asr", repo, None))
-        except Exception as exc:  # noqa: BLE001
-            print(f"skip ASR model: {exc}")
+    if only in ("all", "asr"):
+        use_funasr = _try_import("funasr") and settings.asr_provider in ("auto", "funasr")
+        if use_funasr:
+            try:
+                _download_funasr_models(settings)
+                print("  OK -> ModelScope/HuggingFace cache")
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"funasr:{settings.funasr_model}")
+                print(f"  FAILED: {type(exc).__name__}: {exc}")
+        elif _try_import("faster_whisper"):
+            # 老部署回退：按 faster-whisper 模型名映射到对应的 HF repo
+            try:
+                from faster_whisper.utils import _MODELS
+
+                repo = _MODELS.get(settings.whisper_model, settings.whisper_model)
+                repos.append(("asr", repo, None))
+            except Exception as exc:  # noqa: BLE001
+                print(f"skip ASR model: {exc}")
+        else:
+            print("skip ASR model: neither funasr nor faster-whisper is installed")
+
     if only in ("all", "pyannote"):
         if settings.hf_token:
             for repo in (
@@ -155,17 +286,19 @@ def cmd_download_models(args: argparse.Namespace) -> int:
         else:
             print("skip pyannote models: OA_HF_TOKEN is empty")
 
-    failed: list[str] = []
-    for kind, repo, token in repos:
-        print(f"downloading [{kind}] {repo} ...", flush=True)
-        try:
-            path = snapshot_download(repo_id=repo, token=token)
-            print(f"  OK -> {path}")
-        except Exception as exc:  # noqa: BLE001
-            failed.append(repo)
-            print(f"  FAILED: {type(exc).__name__}: {exc}")
+    if repos:
+        from huggingface_hub import snapshot_download
+
+        for kind, repo, token in repos:
+            print(f"downloading [{kind}] {repo} ...", flush=True)
+            try:
+                path = snapshot_download(repo_id=repo, token=token)
+                print(f"  OK -> {path}")
+            except Exception as exc:  # noqa: BLE001
+                failed.append(repo)
+                print(f"  FAILED: {type(exc).__name__}: {exc}")
     if failed:
-        print("\n以下模型下载失败（可尝试 OA_HF_ENDPOINT=https://hf-mirror.com 后重试）：")
+        print("\n以下模型下载失败（FunASR 可尝试 OA_FUNASR_HUB=ms；HF 可尝试 OA_HF_ENDPOINT=https://hf-mirror.com 后重试）：")
         for repo in failed:
             print("  -", repo)
         return 1
@@ -209,6 +342,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list-users", help="list users")
     p.set_defaults(func=cmd_list_users)
 
+    p = sub.add_parser("set-timezone", help="update timezone for all users (or one user)")
+    p.add_argument("timezone", help="IANA timezone name, e.g. Asia/Shanghai or UTC")
+    p.add_argument("--user-id", default=None, help="only update this user id")
+    p.set_defaults(func=cmd_set_timezone)
+
     p = sub.add_parser("seed-demo", help="create demo data (users, cards, schedule, meetings...)")
     p.add_argument("--api-key", default=None)
     p.add_argument("--reset", action="store_true", help="drop all tables first")
@@ -224,10 +362,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("requeue-stuck", help="reset stuck 'processing' segments back to queued")
     p.set_defaults(func=cmd_requeue_stuck)
 
+    p = sub.add_parser("merge-cards", help="ask the LLM to merge recently added cards of the same conversation")
+    p.add_argument("--user-id", default=None)
+    p.add_argument("--lookback", type=float, default=None, help="only cards created within N seconds")
+    p.add_argument("--dry-run", action="store_true", help="only print AI-proposed groups, do not merge")
+    p.set_defaults(func=cmd_merge_cards)
+
     p = sub.add_parser("doctor", help="print runtime diagnostics (queue counts, provider modes)")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("download-models", help="pre-download whisper/pyannote models (supports HF mirror)")
+    p = sub.add_parser("download-models", help="pre-download ASR (FunASR) / pyannote models (supports HF mirror)")
     p.add_argument("--only", choices=["all", "asr", "pyannote"], default="all")
     p.set_defaults(func=cmd_download_models)
 

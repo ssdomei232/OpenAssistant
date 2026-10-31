@@ -177,7 +177,7 @@ def resample_audio(samples: np.ndarray, sr: int, target_sr: int) -> np.ndarray:
     """高质量重采样：降采样先做抗混叠低通再插值，升采样用线性插值。
 
     典型场景：Agent 以 48 kHz 上传（DJI Mic Mini 原生采样率），Server 内部统一
-    转成 16 kHz 供 faster-whisper / 声纹模型使用。直接线性抽取会把 8 kHz 以上的
+    转成 16 kHz 供 FunASR / 声纹模型使用。直接线性抽取会把 8 kHz 以上的
     能量折叠到可听频段（混叠），因此这里先低通到目标 Nyquist 以下再抽取。
     """
     if sr == target_sr or samples.size == 0:

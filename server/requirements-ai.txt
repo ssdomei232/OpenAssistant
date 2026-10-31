@@ -1,10 +1,27 @@
 # OpenAssistant Server - GPU / 生产级 AI 依赖
 # 运行环境：RTX A4000 (16GB)；Python 3.10/3.11（torch 与 pyannote 的版本约束）
 # 安装：pip install -r requirements-ai.txt
+#
+# ⚠️ GPU 主机必读：PyPI 上的 torch 默认是 CPU 版（torch.version.cuda = None，
+# torch.cuda.is_available() = False）。要使用显卡，请先按驱动装 CUDA 版 torch，
+# 再安装本文件（本文件里的 torch/torchaudio 版本约束不会覆盖已装的 CUDA 版）：
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu132
+#   python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# 驱动与 CUDA 版本对照：nvidia-smi 右上角 "CUDA Version" 即驱动最高支持的 CUDA 版本，
+# 选不超过它的 whl 通道（cu126 / cu130 / cu132）。安装后用 `python -m app.cli doctor`
+# 查看 gpu 字段确认 torch 能看到显卡。
+# 注意：之后升级依赖（pip install -U / 新版本 requirements）时，torch 有可能被 PyPI 的
+# CPU 版覆盖；升级完请重跑 `python -m app.cli doctor`，发现 cuda_available=false 就重装
+# CUDA 版 torch。
 -r requirements.txt
 
-# ASR：faster-whisper（large-v3 / large-v3-turbo），需要 CUDA 12 + cuDNN 8/9
-faster-whisper>=1.0.3
+# ASR：FunASR（默认 Paraformer-zh + FSMN-VAD + CT-Punc）
+# FunASR 首次运行会通过 ModelScope 下载模型；国内网络无需额外配置。
+funasr>=1.1
+modelscope>=1.15
+
+# 可选备用 ASR：faster-whisper（OA_ASR_PROVIDER=faster_whisper 时使用）
+# faster-whisper>=1.0.3
 
 # 说话人分离 + 声纹 embedding
 torch>=2.3
@@ -20,4 +37,3 @@ omegaconf>=2.3
 
 # 可选：CAM++ 声纹（如果使用 modelscope / funasr 方案）
 # modelscope>=1.15
-# funasr>=1.1

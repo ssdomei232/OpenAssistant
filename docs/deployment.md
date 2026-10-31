@@ -5,7 +5,7 @@
 ```
 GPU 主机（Server）        树莓派（Agent）             手机（App）
 FastAPI + SQLite/Postgres  DJI Mic Mini USB 麦克风     Android / iOS 安装包
-faster-whisper / pyannote  VAD 切片 + SQLite 队列      Bluetooth LE 管理录音端
+FunASR / pyannote          VAD 切片 + SQLite 队列      Bluetooth LE 管理录音端
 钉钉机器人 / 定时任务       BLE GATT 管理通道           API Key 访问 Server
 ```
 
@@ -26,8 +26,12 @@ git clone <your-repo> /opt/openassistant
 cd /opt/openassistant/server
 python3.11 -m venv /opt/openassistant/venv
 source /opt/openassistant/venv/bin/activate
+# GPU 主机：先装 CUDA 版 torch（PyPI 的 torch 是 CPU 版，torch.cuda.is_available() 会是 False）
+# cu 通道按 `nvidia-smi` 右上角 CUDA Version 选择（不超过它的最新通道，如 cu126/cu130/cu132）
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu132
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 pip install -r requirements.txt        # 轻量模式：无需 GPU，mock providers 可跑通全流程
-pip install -r requirements-ai.txt     # 生产模式：faster-whisper + pyannote（需 CUDA）
+pip install -r requirements-ai.txt     # 生产模式：FunASR + pyannote（建议 CUDA，CPU 也可跑）
 cp .env.example .env
 ```
 
@@ -36,15 +40,24 @@ cp .env.example .env
 ```ini
 OA_PUBLIC_BASE_URL=https://assistant.example.com
 OA_API_KEY_PEPPER=<随机长字符串>
+# 服务器默认时区（IANA 名称，默认 Asia/Shanghai）；显式配置后重启会把已有用户同步为该时区
+OA_TIMEZONE=Asia/Shanghai
 OA_HF_TOKEN=<HuggingFace token，pyannote 模型下载用>
+# ASR（FunASR，默认 Paraformer-zh + FSMN-VAD + CT-Punc；GPU 不可用时自动回退 CPU）
+OA_FUNASR_DEVICE=cuda
+OA_FUNASR_HUB=ms
 OA_LLM_BASE_URL=https://api.deepseek.com/v1
 OA_LLM_API_KEY=<DeepSeek API Key>
 OA_DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=...
 OA_DINGTALK_SECRET=<钉钉加签密钥，可选>
 ```
 
-> 首次启动 faster-whisper / pyannote 会下载模型（large-v3-turbo ≈ 1.6GB，
-> pyannote 相关模型合计 ≈ 1GB）。离线部署请提前在 GPU 主机缓存。
+> 时区修改两种方式：① `.env` 里设 `OA_TIMEZONE` 后重启 Server（会同步已有用户）；
+> ② 不改配置，直接 `python -m app.cli set-timezone Asia/Shanghai` 更新已有用户。
+> 若 `/me` 返回的时间不是你期望的时区，先确认这两处之一。
+
+> 首次启动 FunASR 会通过 ModelScope 下载 ASR 模型（Paraformer-zh + FSMN-VAD + CT-Punc ≈ 1GB），
+> pyannote 相关模型合计 ≈ 1GB。离线部署请提前在 GPU 主机缓存。
 
 ### 1.2.1 HuggingFace 模型授权（pyannote 必读）
 
@@ -84,18 +97,21 @@ pyannote.audio 4.x 也可用新模型（同样需要授权）：
 
 ### 1.2.2 模型下载慢 / 卡住（国内网络）
 
-faster-whisper large-v3-turbo 首次推理需要下载约 1.6GB 模型；HuggingFace 直连在国内
-经常只有几十 KB/s 甚至卡住，表现为 **第一段音频长时间停在 processing、日志无报错**。
+FunASR 默认从 **ModelScope**（`OA_FUNASR_HUB=ms`）下载模型，国内网络通常很快；若换成
+`OA_FUNASR_HUB=hf` 或下载 pyannote 模型，则会走 HuggingFace。HuggingFace 直连在国内经常只有
+几十 KB/s 甚至卡住，表现为 **第一段音频长时间停在 processing、日志无报错**。
 
 推荐做法：
 
 ```ini
 # server/.env
-OA_HF_ENDPOINT=https://hf-mirror.com     # 使用 HF 镜像（也可设系统环境变量 HF_ENDPOINT）
-# OA_WHISPER_MODEL=small                 # 或先换小模型快速跑通
+OA_FUNASR_HUB=ms                         # FunASR 走 ModelScope（默认值，国内推荐）
+OA_MODELSCOPE_CACHE=./data/modelscope    # ASR 模型缓存目录（可选，默认 ~/.cache/modelscope）
+OA_HF_ENDPOINT=https://hf-mirror.com      # pyannote/可选 faster-whisper 使用 HF 镜像
+# OA_FUNASR_MODEL=paraformer-zh          # 也可换 SenseVoiceSmall 等模型
 ```
 
-然后**预先下载模型**（断点续传，失败可重跑）：
+然后**预先下载模型**（失败可重跑）：
 
 ```bash
 cd server
@@ -109,54 +125,93 @@ python -m app.cli download-models --only all
 $env:HF_ENDPOINT = "https://hf-mirror.com"
 ```
 
-> 判断是否卡在下载：查看 `%USERPROFILE%\.cache\huggingface\hub\models--mobiuslabsgmbh--faster-whisper-large-v3-turbo\blobs`
-> 下是否有体积不再增长的 `*.incomplete` 文件。
+> 判断是否卡在下载：FunASR 模型默认缓存在 `%USERPROFILE%\.cache\modelscope\models\iic--...`
+>（可用 `OA_MODELSCOPE_CACHE=./data/modelscope` 改到部署目录，便于备份与离线部署）；
+> pyannote/faster-whisper 缓存在 `%USERPROFILE%\.cache\huggingface\hub\`，
+> 检查其中是否有体积不再增长的 `*.incomplete` 文件。
 
-### 1.2.4 Windows GPU：cublas64_12.dll 找不到
+### 1.2.4 Windows GPU：GPU 不可用 / 显存不足
 
-若日志出现：
+FunASR 基于 PyTorch；装的是 **CUDA 版 torch** 时（见 1.2.5），轮子已自带 CUDA 运行时，一般无需额外配置 DLL。
+若日志出现 GPU 相关错误（如 `CUDA out of memory`、`no CUDA-capable device`），
+程序会**自动回退 CPU 并继续转写**（见日志 `FunASR GPU 不可用 ... 自动切换 CPU`）。
 
-```
-RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
-```
+三种处理方式：
 
-说明 ctranslate2 找到了 GPU，但缺少 CUDA 12 的 cuBLAS / cuDNN 9 运行时 DLL。三种解决方式：
-
-1. **推荐：让服务自动探测**（新版本已内置）。程序会扫描 CUDA Toolkit、pip 的
-   `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`，以及 DaVinci Resolve 等自带 CUDA 12
-   运行时的软件目录，并把 DLL 目录加入搜索路径。无需安装 CUDA Toolkit。
-   也可以显式指定：
+1. 直接使用 CPU：`OA_FUNASR_DEVICE=cpu`（能跑，但长音频明显变慢）。
+2. 减小 GPU 压力：缩短 `OA_FUNASR_BATCH_SIZE_S`，或换更小的模型
+   （如 `OA_FUNASR_MODEL=paraformer-zh-streaming`）。
+3. 老部署若仍使用 faster-whisper（`OA_ASR_PROVIDER=faster_whisper`），遇到
+   `Library cublas64_12.dll is not found` 时，按下面方式补齐 CUDA 12 + cuDNN 9：
    ```ini
    OA_CUDA_DLL_DIRS=C:\Program Files\Blackmagic Design\DaVinci Resolve
    ```
-2. 安装 CUDA 12 Toolkit + cuDNN 9 for CUDA 12（并加入 PATH）。
-3. 直接使用 CPU：`OA_WHISPER_DEVICE=cpu`、`OA_WHISPER_COMPUTE_TYPE=int8`
-   （能跑但大模型会非常慢；也可 `OA_WHISPER_MODEL=small`）。
+   程序也会扫描 CUDA Toolkit、pip 的 `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` 等目录；
+   仍失败会自动回退 CPU int8。
 
-新版本即使 GPU 失败也会**自动回退 CPU int8 并继续转写**，不会再让整条队列卡死。
-可设置 `OA_WHISPER_LANGUAGE=zh` 减少短片段语言检测错误。
+新版本即使 GPU 失败也会**自动回退 CPU 并继续转写**，不会再让整条队列卡死。
+
+### 1.2.5 torch 看不到 GPU（`torch.cuda.is_available() == False`）
+
+`nvidia-smi` 能看到显卡、但日志出现 `FunASR GPU 不可用（torch.cuda.is_available() == False）`，
+绝大多数是**装成了 CPU 版 torch**（PyPI 默认 wheel 就是 CPU 版，`torch.version.cuda == None`）。确认：
+
+```bash
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+python -m app.cli doctor        # 看 gpu 字段：torch / torch_cuda / cuda_available / devices
+```
+
+修复（装与驱动匹配的 CUDA 版 torch，再用 `nvidia-smi` 右上角 CUDA Version 选通道）：
+
+```bash
+# 示例：驱动支持 CUDA 13.2 → cu132；也常用 cu126 / cu130
+pip uninstall -y torch
+pip install torch --index-url https://download.pytorch.org/whl/cu132
+# 已装 CPU 版 torchaudio 时一并换掉（版本需与 torch 匹配）
+pip install torchaudio --index-url https://download.pytorch.org/whl/cu132
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+国内下载慢可换 PyTorch 轮子镜像（pip 同上，直接给镜像 URL 下载 whl 后 `pip install ./xxx.whl`），
+例如 SJTU、阿里云镜像。装好后重启 Server，`/health` 或 `doctor` 中 ASR 不再出现 CPU fallback。
+
+> 注意：不要在一个环境里混用不同 CUDA 通道的 torch/torchaudio；升级 torch 后
+> 重跑 `python -m app.cli doctor` 确认 GPU 与 provider 都正常。
 
 ### 1.2.3 录音正常但没有卡片（队列没被处理）
 
 按顺序检查：
 
 1. `GET /api/v1/health`：确认 `worker.enabled=true`、`worker.alive=true`；
-   `audio.queued` 应逐渐下降、`audio.done` 上升。若 `worker.alive=false`，
-   检查启动日志里的 `background worker started` 与 `OA_WORKER_ENABLED`；
+   `audio.queued` 应逐渐下降、`audio.transcribed`（等待合并窗后总结）→ `audio.done` 上升。
+   若 `worker.alive=false`，检查启动日志里的 `background worker started` 与 `OA_WORKER_ENABLED`；
    新版本会在第一个 HTTP 请求时自愈启动 worker。
-2. Server 重启会自动把上次遗留的 `processing` 重新入队（`recovered_after_restart`）。
+2. Server 重启会自动把上次遗留的 `processing` 重新入队（`recovered_after_restart`）；
+   已 `transcribed` 的片段会在下次 tick 直接总结（无需重新 ASR）。
 3. 修复模型/依赖后，把历史失败片段重新入队：
    ```bash
    python -m app.cli requeue-failed
    python -m app.cli process-pending        # 或等 worker 自动处理
    ```
-4. 也可临时手动跑一遍队列：`python -m app.cli process-pending`。
+4. 也可临时手动跑一遍队列：`python -m app.cli process-pending`
+   （会先转写，再按时间相邻关系立即合并总结，不等待合并窗口）。
 5. `python -m app.cli doctor` 可打印队列状态、provider 模式与卡片数量。
+
+> **卡片为什么延迟 20 秒左右出现？** 这是对话合并策略：片段转写后会等待
+> `OA_CONVERSATION_MERGE_WINDOW_S`（默认 20s），把时间相近的多个片段合并成一张卡片统一总结，
+> 避免同一段对话被 VAD 切片切成多张卡。片段此时 `status=transcribed` 属正常状态；
+> 可通过 `OA_CONVERSATION_MERGE_ENABLED=false` 关闭合并（退化为每段一张卡）。
+
+> **AI 定时合并卡片**：worker 每隔 `OA_CARD_MERGE_INTERVAL_S`（默认 300s）让 LLM 复盘最近
+> `OA_CARD_MERGE_LOOKBACK_S`（默认 1800s）新增的卡片，话题相同/时间相近的卡片会合并成一张并重新总结
+> （软删除其余卡片，写 `card.merge` 审计，不重复执行日程/待办/指令）。需要配置 LLM，否则自动跳过；
+> 可手动补合并：`python -m app.cli merge-cards --dry-run` 先看 AI 的分组建议，去掉 `--dry-run` 执行。
+> `/health` 的 `worker.card_merge` 可查看上次运行时间与合并数量。
 
 > 新版本内置两道音频质量门控，避免生成"字幕组"之类的假卡片：
 >
 > - 音频 RMS 低于 `OA_MIN_SPEECH_RMS`（默认 0.004）的片段直接标记 done、不做 ASR；
-> - Whisper 在静音/噪声上常见的幻觉文本（中文字幕、字幕志愿者、请不吝点赞、感谢观看等）会被丢弃。
+> - ASR 在静音/噪声上常见的幻觉文本（中文字幕、字幕志愿者、请不吝点赞、感谢观看等）会被丢弃。
 >
 > 如果树莓派上传了大量 1–2 秒的底噪片段，建议在端上把 `vad.absolute_floor`
 > 调到 250~300、`min_silence_ms` 调到 800，减少无效上传。
@@ -226,6 +281,8 @@ sudo systemctl enable --now openassistant-agent
 ```
 
 - 设备名、采样率、VAD 参数、Server 地址与 API Key 写在 `/etc/openassistant/agent.toml`。
+- 时区也在该文件顶层配置：`timezone = "Asia/Shanghai"`。systemd 默认以 UTC 启动进程，
+  不配置时 `recorded_at` / 日志会显示 UTC；可在 `agent.env` 用 `OA_TIMEZONE` 覆盖。
 - App 通过 BLE（`OpenAssistant-*`）连接设备后，可以修改 WiFi、失败重传、无网暂存等配置；
   配置会同时回传 Server 备份（`PUT /devices/{id}/config`）。
 - 断网时音频片段写入本地 SQLite 队列，恢复网络后按指数退避自动补传。

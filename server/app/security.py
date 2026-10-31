@@ -46,12 +46,30 @@ def create_user(db: Session, *, display_name: str = "我", api_key: str | None =
         display_name=display_name,
         aliases=aliases or [],
         api_key_hash=hash_api_key(api_key, settings.api_key_pepper),
-        timezone="Asia/Shanghai",
+        timezone=settings.timezone,
         settings={"push_enabled": True, "auto_schedule": True, "auto_profile_update": True, "correction_notice": True},
     )
     db.add(user)
     db.flush()
     return user, api_key
+
+
+def apply_configured_timezone(db: Session) -> int:
+    """把 ``OA_TIMEZONE`` 同步到已有用户（仅当它被显式配置时）。
+
+    个人部署通常只有一个用户；在 ``.env`` 里写上 ``OA_TIMEZONE=Asia/Shanghai`` 后重启
+    即可纠正历史用户时区。未显式配置时不做任何修改，App 通过 ``PATCH /me`` 设置的
+    时区也不会被覆盖。
+    """
+    settings = get_settings()
+    if not settings.timezone_explicit:
+        return 0
+    users = db.scalars(select(User).where(User.timezone != settings.timezone)).all()
+    for user in users:
+        user.timezone = settings.timezone
+    if users:
+        db.commit()
+    return len(users)
 
 
 def ensure_bootstrap_user(db: Session) -> User | None:

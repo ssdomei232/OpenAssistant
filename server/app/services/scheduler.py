@@ -11,7 +11,7 @@ from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import select
 
 from .. import prompts
-from ..config import Settings, get_settings
+from ..config import Settings, default_timezone, get_settings
 from ..db import session_scope
 from ..models import ScheduledJob, ScheduleItem, Todo, User
 from ..providers import Providers, get_providers
@@ -24,11 +24,11 @@ from .timeparse import to_local
 logger = logging.getLogger(__name__)
 
 
-def _tz(name: str):
+def _tz(name: str | None = None):
     try:
-        return ZoneInfo(name)
+        return ZoneInfo(name or default_timezone())
     except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("Asia/Shanghai")
+        return ZoneInfo(default_timezone())
 
 
 class SchedulerService:
@@ -65,12 +65,12 @@ class SchedulerService:
     def _schedule_in_runtime(self, job: ScheduledJob) -> None:
         trigger = None
         if job.cron:
-            trigger = CronTrigger.from_crontab(job.cron, timezone=_tz(job.timezone or "Asia/Shanghai"))
+            trigger = CronTrigger.from_crontab(job.cron, timezone=_tz(job.timezone))
         elif job.run_at:
             run_at = job.run_at.replace(tzinfo=ZoneInfo("UTC"))
             if run_at <= datetime.now(tz=ZoneInfo("UTC")):
                 return
-            trigger = DateTrigger(run_date=run_at, timezone=_tz(job.timezone or "Asia/Shanghai"))
+            trigger = DateTrigger(run_date=run_at, timezone=_tz(job.timezone))
         if trigger is None:
             return
         self.scheduler.add_job(
@@ -113,7 +113,7 @@ class SchedulerService:
         user = db.get(User, job.user_id)
         if user is None:
             return {"status": "failed", "error": "user_missing"}
-        tz_name = user.timezone or "Asia/Shanghai"
+        tz_name = user.timezone or default_timezone()
         now = now_utc()
         try:
             result_text = self._build_result(db, user, job, now, tz_name)
@@ -233,7 +233,7 @@ def send_due_reminders(providers: Providers, limit: int = 20) -> int:
             user = db.get(User, item.user_id)
             if user is None:
                 continue
-            tz_name = user.timezone or "Asia/Shanghai"
+            tz_name = user.timezone or default_timezone()
             local = to_local(item.start_at, tz_name)
             text = f"**日程提醒**\n\n{local.strftime('%m-%d %H:%M')} {item.title}"
             if item.location:

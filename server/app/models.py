@@ -23,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .config import default_timezone
 from .db import Base
 from .utils import new_id, now_utc
 
@@ -39,7 +40,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=_id("usr"))
     display_name: Mapped[str] = mapped_column(String(120), default="我")
     aliases: Mapped[list[str]] = mapped_column(JSON, default=list)
-    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
+    timezone: Mapped[str] = mapped_column(String(64), default=default_timezone)
     api_key_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     search_provider: Mapped[str] = mapped_column(String(32), default="builtin")
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -229,7 +230,7 @@ class ScheduledJob(Base):
     name: Mapped[str] = mapped_column(String(160), default="")
     cron: Mapped[str | None] = mapped_column(String(120), nullable=True)
     run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
+    timezone: Mapped[str] = mapped_column(String(64), default=default_timezone)
     prompt: Mapped[str] = mapped_column(Text, default="")
     action: Mapped[str] = mapped_column(String(24), default="agent")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

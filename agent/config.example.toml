@@ -14,6 +14,10 @@ device_id = "pi-livingroom"
 # 队列数据库、音频片段与日志目录；spool.db 位于该目录下
 spool_path = "/var/lib/openassistant"
 log_level = "INFO"
+# 运行时区（IANA 名称）。systemd 常以 UTC 启动进程，若不配置会导致 recorded_at、
+# client_segment_id 与日志时间都是 UTC；Agent 启动时会按此值设置进程 TZ。
+# 可选值示例：Asia/Shanghai、UTC、America/New_York
+timezone = "Asia/Shanghai"
 
 # --- 录音 -------------------------------------------------------------------
 [record]

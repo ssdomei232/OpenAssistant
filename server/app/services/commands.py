@@ -8,6 +8,7 @@ from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import prompts
+from ..config import default_timezone
 from ..models import Card, Command, Meeting, Todo, User
 from ..providers import Providers
 from ..providers.llm import extract_json
@@ -37,7 +38,7 @@ def parse_command(
     base_utc: datetime | None = None,
     providers: Providers | None = None,
 ) -> Intent:
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = _user_tz(user)
     base_utc = base_utc or now_utc()
     base_local = to_local(base_utc, tz_name)
     intent = detect_intent(text, base_local, tz_name)
@@ -76,6 +77,11 @@ def _slot_dt(value, tz_name: str) -> datetime | None:
     return utc_from(dt)
 
 
+def _user_tz(user: User) -> str:
+    """用户时区，未设置时回落到服务器默认时区（OA_TIMEZONE）。"""
+    return user.timezone or default_timezone()
+
+
 def _format_schedule_line(item) -> str:
     local = to_local(item.start_at, _tz_of(item))
     when = local.strftime("%m-%d %H:%M")
@@ -83,11 +89,11 @@ def _format_schedule_line(item) -> str:
 
 
 def _tz_of(item) -> str:
-    return getattr(item, "_tz_name", "Asia/Shanghai")
+    return getattr(item, "_tz_name", None) or default_timezone()
 
 
 def _run_schedule_add(db: Session, user: User, intent: Intent, text: str, card_id: str | None, base_utc: datetime) -> tuple[str, bool]:
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = _user_tz(user)
     start_at = _slot_dt(intent.slots.get("start_at"), tz_name)
     end_at = _slot_dt(intent.slots.get("end_at"), tz_name)
     if start_at is None:
@@ -117,7 +123,7 @@ def _run_schedule_add(db: Session, user: User, intent: Intent, text: str, card_i
 
 
 def _run_todo_add(db: Session, user: User, intent: Intent, text: str, card_id: str | None, base_utc: datetime) -> tuple[str, bool]:
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = _user_tz(user)
     due_at = _slot_dt(intent.slots.get("due_at"), tz_name)
     title = str(intent.slots.get("title") or clean_title(text))
     item = add_todo(db, user, title=title, due_at=due_at, source="command", card_id=card_id)
@@ -128,7 +134,7 @@ def _run_todo_add(db: Session, user: User, intent: Intent, text: str, card_id: s
 
 
 def _run_schedule_query(db: Session, user: User, base_utc: datetime) -> tuple[str, bool]:
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = _user_tz(user)
     start = base_utc - timedelta(hours=2)
     end = base_utc + timedelta(days=14)
     from ..models import ScheduleItem
@@ -162,7 +168,7 @@ def _run_todo_query(db: Session, user: User) -> tuple[str, bool]:
     ).all()
     if not rows:
         return ("目前没有未完成的待办。", True)
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = _user_tz(user)
     lines = [f"还有 {len(rows)} 个待办："]
     for row in rows:
         due = f"（截止 {to_local(row.due_at, tz_name).strftime('%m-%d %H:%M')}）" if row.due_at else ""
@@ -185,7 +191,7 @@ def _run_memory_query(db: Session, user: User, intent: Intent) -> tuple[str, boo
     rows = db.scalars(select(Card).where(*conditions).order_by(Card.occurred_at.desc()).limit(5)).all()
     if not rows:
         return (f"没有找到与“{query}”相关的记忆。", True)
-    tz_name = user.timezone or "Asia/Shanghai"
+    tz_name = _user_tz(user)
     lines = [f"找到 {len(rows)} 条相关记忆："]
     for row in rows:
         local = to_local(row.occurred_at, tz_name)
@@ -314,7 +320,7 @@ def handle_user_turns(
         if turn.speaker != "user":
             continue
         for sentence in _sentences(turn.text):
-            intent = detect_intent(sentence, to_local(base_utc or now_utc(), user.timezone or "Asia/Shanghai"), user.timezone or "Asia/Shanghai")
+            intent = detect_intent(sentence, to_local(base_utc or now_utc(), _user_tz(user)), _user_tz(user))
             if intent.intent == "none":
                 continue
             commands.append(

@@ -181,10 +181,12 @@ class AgentService:
         return item
 
     def _next_identity(self, segment: SpeechSegment) -> tuple[str, str]:
-        base = self._recording_started_at or datetime.now().astimezone()
-        recorded = base + timedelta(seconds=segment.start)
-        recorded_at = recorded.astimezone().isoformat(timespec="seconds")
-        stamp = recorded.astimezone().strftime("%Y%m%dT%H%M%S")
+        # 显式使用配置时区，避免 systemd 以 UTC 启动进程时 recorded_at / 片段 ID 变成 UTC
+        tz = self.config.tzinfo
+        base = self._recording_started_at or self.config.now_local()
+        recorded = (base + timedelta(seconds=segment.start)).astimezone(tz)
+        recorded_at = recorded.isoformat(timespec="seconds")
+        stamp = recorded.strftime("%Y%m%dT%H%M%S")
         assert self.spool is not None
         while True:
             self._seq += 1
@@ -269,7 +271,7 @@ class AgentService:
         produced = 0
         self._running = True
         self._recording = True
-        self._recording_started_at = datetime.now().astimezone()
+        self._recording_started_at = self.config.now_local()
         self._last_upload_at = 0.0
         self.log.info(
             "agent started: device=%s source=%s server=%s",
@@ -347,6 +349,7 @@ class AgentService:
         status = {
             "device_id": self.config.device_id,
             "wifi_connected": online,
+            "timezone": self.config.timezone,
             "queue": queue,
             "recording": self._recording,
             "uptime_s": round(self.clock() - self._started_at, 1),

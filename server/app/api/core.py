@@ -5,7 +5,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import select
 
 from .. import __version__
-from ..config import get_settings
+from ..config import get_settings, normalize_timezone
 from ..deps import CurrentUser, DbSession, ProvidersDep, voiceprint_for
 from ..models import AuditLog, Voiceprint
 from ..schemas import MePatch, ProfilePut, SettingsPatch
@@ -38,11 +38,13 @@ def health(request: Request, db: DbSession) -> dict:
         "version": __version__,
         "mode": providers.modes,
         "providers": providers.describe(),
+        "timezone": settings.timezone,
         "scheduler": "enabled" if settings.scheduler_enabled else "disabled",
         "worker": worker.status() if worker is not None else {"enabled": False, "alive": False},
         "audio": {
             "queued": int(status_counts.get("queued", 0)),
             "processing": int(status_counts.get("processing", 0)),
+            "transcribed": int(status_counts.get("transcribed", 0)),
             "failed": int(status_counts.get("failed", 0)),
             "done": int(status_counts.get("done", 0)),
         },
@@ -89,7 +91,10 @@ def patch_me(payload: MePatch, user: CurrentUser, db: DbSession) -> dict:
             raise HTTPException(status_code=422, detail="too_many_aliases")
         user.aliases = aliases
     if payload.timezone is not None:
-        user.timezone = payload.timezone
+        try:
+            user.timezone = normalize_timezone(payload.timezone)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid_timezone") from exc
     if payload.search_provider is not None:
         user.search_provider = payload.search_provider
         merged = dict(user.settings or {})

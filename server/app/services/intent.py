@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ..config import default_timezone
 from .timeparse import clean_title, parse_deadline, parse_time_mentions, to_utc
 
 
@@ -49,10 +50,11 @@ def _clean_query(text: str) -> str:
     return query.strip("，。！？、；：,.!?;: ")
 
 
-def detect_intent(text: str, base_local: datetime, tz_name: str = "Asia/Shanghai") -> Intent:
+def detect_intent(text: str, base_local: datetime, tz_name: str | None = None) -> Intent:
     raw = (text or "").strip()
     if not raw:
         return Intent()
+    tz_name = tz_name or default_timezone()
     if _match_any(NEGATIVE_PATTERNS, raw) and len(raw) <= 12:
         return Intent(intent="none", reply_hint="用户取消或无需操作")
 

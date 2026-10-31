@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import Settings, get_settings
-from .asr import FasterWhisperASR, MockASR
+from .asr import FasterWhisperASR, FunASRASR, MockASR
 from .cuda import prepare_cuda_dlls
 from .diarization import EnergyDiarizer, PyAnnoteDiarizer
 from .llm import OpenAICompatibleLLM, RuleBasedLLM
@@ -79,10 +79,32 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
     modes: dict[str, str] = {}
 
     # ── ASR ───────────────────────────────────────────────────────────────
+    # 默认 FunASR（Paraformer-zh + FSMN-VAD + CT-Punc）；老部署未装 FunASR 时
+    # auto 模式回退 faster-whisper，两者都没有则用 mock 保证主流程可用。
     asr: Any
     want = "mock" if force_mock else settings.asr_provider
-    if want in ("auto", "faster_whisper") and _try("faster_whisper"):
-        # Windows: 把 CUDA 12/cuDNN 9 DLL 目录加入搜索路径（ctranslate2 需要 cublas64_12.dll）
+    funasr_ready = _try("funasr")
+    if want in ("auto", "funasr") and funasr_ready:
+        # Windows: 把 CUDA 12/cuDNN 9 DLL 目录加入搜索路径（torch/onnxruntime 需要）
+        try:
+            prepare_cuda_dlls(settings.cuda_dll_dirs)
+        except Exception:  # pragma: no cover - 探测失败不影响服务
+            logger.debug("failed to prepare CUDA DLL directories", exc_info=True)
+        asr = FunASRASR(
+            settings.funasr_model,
+            vad_model=settings.funasr_vad_model,
+            punc_model=settings.funasr_punc_model,
+            device=settings.funasr_device,
+            hub=settings.funasr_hub,
+            language=settings.funasr_language,
+            use_itn=settings.funasr_use_itn,
+            hotword=settings.funasr_hotword,
+            batch_size_s=settings.funasr_batch_size_s,
+            cuda_dll_dirs=settings.cuda_dll_dirs,
+        )
+        modes["asr"] = "funasr"
+    elif want in ("auto", "faster_whisper") and _try("faster_whisper"):
+        # 旧默认回退：Windows 上 ctranslate2 需要 cublas64_12.dll 等 CUDA DLL
         try:
             prepare_cuda_dlls(settings.cuda_dll_dirs)
         except Exception:  # pragma: no cover - 探测失败不影响服务
@@ -98,7 +120,9 @@ def build_providers(settings: Settings | None = None, *, force_mock: bool = Fals
     else:
         asr = MockASR()
         modes["asr"] = "mock"
-        if want == "faster_whisper":
+        if want == "funasr":
+            logger.warning("FunASR is not installed; falling back to mock ASR")
+        elif want == "faster_whisper":
             logger.warning("faster-whisper is not installed; falling back to mock ASR")
 
     # ── diarization ───────────────────────────────────────────────────────

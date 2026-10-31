@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import default_timezone
 from ..models import AuditLog, Card, CardCorrection, Meeting, ScheduleItem, Todo, TranscriptTurn, User
 from ..providers import Providers
 from ..utils import now_utc
@@ -84,7 +85,7 @@ def rederive_derived(db: Session, user: User, card: Card) -> dict[str, int]:
     turns = _card_turns(db, card)
     if not turns:
         return {"schedule": 0, "todos": 0}
-    draft = _rule_extract(turns, card.occurred_at, user.timezone or "Asia/Shanghai")
+    draft = _rule_extract(turns, card.occurred_at, user.timezone or default_timezone())
     created = {"schedule": 0, "todos": 0}
     for item in draft.schedule_items:
         add_schedule(

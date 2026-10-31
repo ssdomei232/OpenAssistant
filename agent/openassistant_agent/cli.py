@@ -66,13 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="日志级别：DEBUG/INFO/WARNING/ERROR",
     )
+    parser.add_argument(
+        "--timezone",
+        default=None,
+        help="覆盖配置中的时区（IANA 名称，如 Asia/Shanghai、UTC）",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add_common(sub: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        """让 --config/--log-level 也可以写在子命令之后。"""
+        """让 --config/--log-level/--timezone 也可以写在子命令之后。"""
         sub.add_argument("--config", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         sub.add_argument("--log-level", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        sub.add_argument("--timezone", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         return sub
 
     run = add_common(subparsers.add_parser("run", help="常驻运行：采集 -> 切片 -> 上传"))
@@ -123,12 +129,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_config(args: argparse.Namespace, **overrides: Any) -> AgentConfig:
+    if getattr(args, "timezone", None):
+        overrides["timezone"] = args.timezone
     config = AgentConfig.load(
         args.config, overrides={key: value for key, value in overrides.items() if value is not None}
     )
     if getattr(args, "log_level", None):
         config.log_level = str(args.log_level)
     return config
+
+
+def _apply_runtime_config(service: AgentService, config: AgentConfig) -> None:
+    """BLE 写入的新配置生效：切进程时区 + 替换运行中的 service 配置。"""
+    config.apply_timezone()
+    service.config = config
 
 
 def _print_json(payload: Any) -> None:
@@ -165,6 +179,7 @@ def _prepare_service(config: AgentConfig, *, source: str | None, input_path: str
     if input_path:
         config.record.input_path = input_path
     config.validate()
+    config.apply_timezone()
     audio_source = create_source(
         config,
         source=config.record.source,
@@ -221,6 +236,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "server_url": config.server_url,
         "config_path": config.config_path,
         "spool_path": config.spool_path,
+        "timezone": config.timezone,
         "record": {
             "device": config.record.device,
             "sample_rate": config.record.sample_rate,
@@ -256,6 +272,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"server_url    : {payload['server_url']}")
     print(f"config_path   : {payload['config_path']}")
     print(f"spool_path    : {payload['spool_path']}")
+    print(f"timezone      : {payload['timezone']}")
     print(f"source        : {payload['record']['source']} ({payload['record']['device']})")
     queue = payload.get("queue", {})
     if "error" in queue:
@@ -470,7 +487,7 @@ def cmd_selftest(args: argparse.Namespace) -> int:
             spool=service.spool,
             status_provider=service.status,
             uploader=service.uploader,
-            on_config_applied=lambda cfg: setattr(service, "config", cfg),
+            on_config_applied=lambda cfg: _apply_runtime_config(service, cfg),
             config_saver=lambda cfg: str(workdir / "config.toml"),
         )
         ble = MockBleTransport(manager)
@@ -524,7 +541,7 @@ def cmd_ble_serve(args: argparse.Namespace) -> int:
         spool=service.spool,
         status_provider=service.status,
         uploader=service.uploader,
-        on_config_applied=lambda cfg: setattr(service, "config", cfg),
+        on_config_applied=lambda cfg: _apply_runtime_config(service, cfg),
     )
 
     if args.mock:
@@ -580,6 +597,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = None
     try:
         config = _load_config(args)
+        # 在配置日志前切换进程时区：systemd 默认 UTC 时也能输出本地时间日志
+        config.apply_timezone()
         configure_logging(args.log_level or config.log_level)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)

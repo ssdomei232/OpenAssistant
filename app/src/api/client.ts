@@ -11,6 +11,7 @@ import type {
   AuditQuery,
   CardDeleteResult,
   CardDetail,
+  CardMergeResult,
   CardPatch,
   CardQuery,
   CardSummary,
@@ -414,6 +415,19 @@ export const api = {
       () =>
         request<string>(`/cards/${encodeURIComponent(id)}/transcript.txt`, {
           expectText: true,
+        }),
+    );
+  },
+
+  /** 手动合并多张卡片并重新总结（App 历史记录页多选合并）。 */
+  mergeCards(cardIds: string[], note?: string): Promise<CardMergeResult> {
+    return demoOrLive(
+      () => demoApi.mergeCards(cardIds, note),
+      () =>
+        request<CardMergeResult>('/cards/merge', {
+          method: 'POST',
+          body: { card_ids: cardIds, note: note ?? '' },
+          timeoutMs: 120_000,
         }),
     );
   },

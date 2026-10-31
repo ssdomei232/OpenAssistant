@@ -9,6 +9,7 @@ import type {
   AuditQuery,
   CardDeleteResult,
   CardDetail,
+  CardMergeResult,
   CardPatch,
   CardQuery,
   CardSummary,
@@ -932,6 +933,92 @@ export const demoApi = {
     return card.transcript
       .map((t) => `${t.speaker_label} ${formatClock(t.start)}-${formatClock(t.end)}\n${t.text}`)
       .join('\n\n');
+  },
+
+  /** 演示模式下的手动合并：合并转写、并集字段、软删除其余卡片并重挂日程/待办。 */
+  async mergeCards(cardIds: string[], note?: string): Promise<CardMergeResult> {
+    await delay();
+    const uniqueIds = [...new Set(cardIds)];
+    if (uniqueIds.length < 2) throw new Error('too_few_cards');
+    const selected = uniqueIds.map((id) => cardsFixture.find((card) => card.id === id));
+    if (selected.some((card) => !card)) throw new Error('card_not_found');
+    if (selected.some((card) => card!.deleted_at)) throw new Error('card_deleted');
+    if (selected.some((card) => card!.type === 'meeting' || card!.meeting_id)) {
+      throw new Error('cannot_merge_meeting_cards');
+    }
+    const cards = (selected as CardDetail[]).slice().sort((a, b) => a.occurred_at.localeCompare(b.occurred_at));
+    const [primary, ...others] = cards;
+    const base = new Date(primary.occurred_at).getTime();
+    const transcript: TranscriptTurn[] = [];
+    for (const card of cards) {
+      const offset = (new Date(card.occurred_at).getTime() - base) / 1000;
+      for (const turn of card.transcript) {
+        transcript.push({ ...turn, start: offset + turn.start, end: offset + turn.end });
+      }
+    }
+    transcript.sort((a, b) => a.start - b.start);
+    const uniqueBy = <T extends { id: string }>(items: T[]): T[] => {
+      const seen = new Map<string, T>();
+      for (const item of items) if (!seen.has(item.id)) seen.set(item.id, item);
+      return [...seen.values()];
+    };
+    const now = nowIso();
+    primary.transcript = transcript;
+    primary.title = `${primary.title}（已合并）`;
+    primary.summary = [primary.summary, ...others.map((card) => card.summary)]
+      .filter(Boolean)
+      .join(' ');
+    primary.key_points = [...new Set(cards.flatMap((card) => card.key_points))].slice(0, 8);
+    primary.people = [...new Set(cards.flatMap((card) => card.people))];
+    primary.duration_s = transcript.length
+      ? transcript[transcript.length - 1].end - transcript[0].start
+      : 0;
+    primary.labels = {
+      user_turns: transcript.filter((turn) => turn.speaker === 'user').length,
+      other_turns: transcript.filter((turn) => turn.speaker !== 'user').length,
+    };
+    primary.schedule_items = uniqueBy(cards.flatMap((card) => card.schedule_items));
+    primary.todos = uniqueBy(cards.flatMap((card) => card.todos));
+    primary.commands = uniqueBy(cards.flatMap((card) => card.commands));
+    primary.corrections = uniqueBy(cards.flatMap((card) => card.corrections));
+    const segmentIdsOf = (card: CardDetail): string[] => {
+      if (card.audio_segment_ids?.length) return card.audio_segment_ids;
+      const match = card.audio_url?.match(/\/audio\/([^/]+)\/file/);
+      return match ? [match[1]] : [];
+    };
+    primary.audio_segment_ids = [...new Set(cards.flatMap(segmentIdsOf))];
+    primary.has_correction = primary.corrections.length > 0;
+    primary.updated_at = now;
+    for (const other of others) {
+      other.deleted_at = now;
+      for (const item of scheduleFixture) if (item.card_id === other.id) item.card_id = primary.id;
+      for (const item of todoFixture) if (item.card_id === other.id) item.card_id = primary.id;
+      auditFixture.unshift({
+        id: `audit_demo_${Date.now()}_${other.id}`,
+        at: now,
+        action: 'card.merge',
+        entity: 'card',
+        entity_id: other.id,
+        before: { title: other.title },
+        after: { merged_into: primary.id, reason: note?.trim() || '用户手动合并' },
+        note: '用户手动合并',
+      });
+    }
+    auditFixture.unshift({
+      id: `audit_demo_${Date.now()}_${primary.id}`,
+      at: now,
+      action: 'card.merge',
+      entity: 'card',
+      entity_id: primary.id,
+      before: { card_ids: cards.map((card) => card.id) },
+      after: { merged_card_ids: others.map((card) => card.id) },
+      note: '用户手动合并主卡片',
+    });
+    return {
+      ...clone(primary),
+      merged_card_ids: others.map((card) => card.id),
+      merge_reason: note?.trim() || '用户手动合并',
+    };
   },
 
   async getSchedule(query: ScheduleQuery = {}): Promise<{ items: ScheduleItem[] }> {

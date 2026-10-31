@@ -197,4 +197,13 @@ def pending_count(user: CurrentUser, db: DbSession) -> dict:
             AudioSegment.user_id == user.id, AudioSegment.status == "queued"
         )
     ) or 0
-    return {"queued": int(queued), "pending_ids": pending_segment_ids(limit=5)}
+    awaiting_summary = db.scalar(
+        select(func.count(AudioSegment.id)).where(
+            AudioSegment.user_id == user.id, AudioSegment.status == "transcribed"
+        )
+    ) or 0
+    return {
+        "queued": int(queued),
+        "awaiting_summary": int(awaiting_summary),
+        "pending_ids": pending_segment_ids(limit=5),
+    }

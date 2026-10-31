@@ -173,20 +173,23 @@ class PyAnnoteDiarizer:
     def diarize(self, samples: np.ndarray, sr: int) -> list[DiarizationSegment]:
         import torch  # type: ignore
 
+        from .numerics import quiet_numerical_warnings
+
         pipeline = self._pipeline or self._load()
         waveform = torch.from_numpy(np.asarray(samples, dtype=np.float32)).unsqueeze(0)
-        try:
-            output = pipeline({"waveform": waveform, "sample_rate": sr})
-        except (TypeError, ValueError):
-            # pyannote 4 只保证文件路径输入：写临时 wav 兜底
-            path = self._temp_wav(samples, sr)
+        with quiet_numerical_warnings():
             try:
-                output = pipeline(path)
-            finally:
+                output = pipeline({"waveform": waveform, "sample_rate": sr})
+            except (TypeError, ValueError):
+                # pyannote 4 只保证文件路径输入：写临时 wav 兜底
+                path = self._temp_wav(samples, sr)
                 try:
-                    os.unlink(path)
-                except OSError:  # pragma: no cover - 清理失败不影响结果
-                    pass
+                    output = pipeline(path)
+                finally:
+                    try:
+                        os.unlink(path)
+                    except OSError:  # pragma: no cover - 清理失败不影响结果
+                        pass
         # pyannote >=3.1 returns DiarizeOutput; older versions return Annotation
         annotation = getattr(output, "speaker_diarization", output)
         segments: list[DiarizationSegment] = []

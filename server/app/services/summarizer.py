@@ -4,15 +4,23 @@ The hard identity constraint is enforced twice: rule extraction only reads
 ``[使用者]`` turns, and LLM output is filtered through a user-support check so
 that schedule/todo/command items hallucinated from ``[其他人]`` context are
 dropped before they are persisted.
+
+The summariser may also *discard* a segment instead of producing a card: the LLM
+is allowed to mark audio as too short / meaningless (``discard: true`` in its
+JSON reply), and a conservative deterministic fallback does the same whenever
+there is no usable LLM.  Discarding never wins over extracted actions - a
+schedule/todo/command (or a substantive transcript) always keeps the card.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Sequence
 
 from .. import prompts
+from ..config import default_timezone, get_settings
 from ..providers.llm import extract_json
 from .align import Turn, transcript_text, user_only
 from .intent import detect_intent
@@ -31,6 +39,39 @@ SCHEDULE_VERBS = re.compile(
 PEOPLE_RE = re.compile(r"(?:和|跟|与|对|给|找)([\u4e00-\u9fa5]{2,4})(?:一起|开会|讨论|聊|说|见面|吃饭|确认|沟通|对接|汇报)")
 PEOPLE_STOP = {"你", "我", "他", "她", "大家", "他们", "我们", "客户", "同事", "领导", "老板", "对方"}
 MEDIA_HINTS = ("电视剧", "电影", "视频", "直播", "播客", "综艺", "短视频", "网课", "音频节目", "广播")
+
+logger = logging.getLogger(__name__)
+
+# 语气词/应答词的字符与词组：用于判断“只有语气词、没有有效信息”的音频
+_FILLER_CHARS = frozenset("嗯啊哦噢呃额唉哎奥哈呵嘿喂对是行好谢拜呀吧呢的了嘛咯我你您他她它这那们个")
+_FILLER_WORDS = (
+    "知道了",
+    "明白了",
+    "了解了",
+    "收到",
+    "谢谢",
+    "多谢",
+    "再见",
+    "拜拜",
+    "不客气",
+    "没关系",
+    "没事",
+    "可以",
+    "好的",
+    "行了",
+    "okay",
+    "ok",
+    "hi",
+    "hello",
+)
+# 出现这些信息信号（时间/数字/常见事务词/英文单词）就不算“简短无意义”
+_INFO_SIGNAL_RE = re.compile(
+    r"\d|今天|明天|后天|昨天|上午|下午|晚上|早上|中午|凌晨|周[一二三四五六日天]|星期|"
+    r"[年月日号点分]|小时|分钟|会议|开会|项目|方案|工作|时间|地点|计划|任务|"
+    r"[A-Za-z]{2,}"
+)
+# AI 判定丢弃时，转写有效字数达到该值即视为“有明显信息量”，忽略丢弃请求以防误删
+LLM_DISCARD_MAX_CHARS = 160
 
 
 @dataclass
@@ -68,6 +109,9 @@ class CardDraft:
     commands: list[CommandDraft] = field(default_factory=list)
     is_meeting: bool = False
     source: str = "rule"
+    # 丢弃：音频过于简短或无意义，不生成卡片（title/summary 等字段无意义）
+    discard: bool = False
+    discard_reason: str = ""
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -120,6 +164,66 @@ def _first_sentence(text: str, limit: int = 80) -> str:
         if cleaned:
             return cleaned[:limit]
     return text.strip()[:limit]
+
+
+# ── discard heuristics ────────────────────────────────────────────────────
+def _compact(text: str) -> str:
+    """Remove whitespace/punctuation, keeping CJK characters and alphanumerics."""
+    return re.sub(r"[\W_]+", "", text or "", flags=re.UNICODE)
+
+
+def _is_filler_text(text: str) -> bool:
+    """True when ``text`` consists only of interjections / acknowledgements."""
+    compact = _compact(text).lower()
+    if not compact:
+        return True
+    remainder = compact
+    for word in sorted(_FILLER_WORDS, key=len, reverse=True):
+        remainder = remainder.replace(word, "")
+    return all(ch in _FILLER_CHARS for ch in remainder)
+
+
+def _meaningful_chars(turns: Sequence[Turn]) -> int:
+    return sum(len(_compact(turn.text)) for turn in turns)
+
+
+def _has_info_signals(compact_text: str) -> bool:
+    return bool(_INFO_SIGNAL_RE.search(compact_text))
+
+
+def _rule_discard_reason(
+    turns: Sequence[Turn],
+    draft: CardDraft,
+    settings: Any,
+) -> str | None:
+    """Conservative deterministic discard used when the LLM is unavailable.
+
+    Only audio whose transcript carries no information at all (pure fillers, or
+    a couple of characters without any time/number/entity signal) is dropped;
+    anything actionable or substantive is always kept.
+    """
+    if not settings.summarizer_discard_enabled:
+        return None
+    if draft.schedule_items or draft.todos or draft.commands:
+        return None
+    if draft.card_type in {"meeting", "media"} or draft.is_meeting:
+        return None
+    texts = [turn.text for turn in turns if _compact(turn.text)]
+    compact = "".join(_compact(text) for text in texts)
+    if not compact:
+        return "转写内容为空"
+    if all(_is_filler_text(text) for text in texts):
+        return "只有语气词或应答词，没有有效信息"
+    if len(compact) <= settings.summarizer_discard_min_chars and not _has_info_signals(compact):
+        return f"转写只有 {len(compact)} 个字，没有有效信息"
+    return None
+
+
+def _llm_discard_blocked(turns: Sequence[Turn], rule_draft: CardDraft) -> bool:
+    """Never let the LLM throw away content with actions or substantial text."""
+    if rule_draft.schedule_items or rule_draft.todos or rule_draft.commands or rule_draft.is_meeting:
+        return True
+    return _meaningful_chars(turns) >= LLM_DISCARD_MAX_CHARS
 
 
 # ── rule based extraction ─────────────────────────────────────────────────
@@ -264,10 +368,12 @@ def _llm_extract(
     if not getattr(llm, "available", False):
         return None
     transcript = transcript_text(turns)
+    local_at = to_local(occurred_at, tz_name)
     try:
         raw = llm.complete(
             prompts.summarizer_system(aliases, profile),
-            prompts.summarizer_user(transcript, occurred_at.isoformat(), tz_name),
+            # 给 LLM 的时间必须是**用户本地时间**，否则“明天下午三点”会被按 UTC 换算偏移
+            prompts.summarizer_user(transcript, local_at.isoformat(), tz_name),
             temperature=0.2,
         )
     except Exception:
@@ -275,6 +381,17 @@ def _llm_extract(
     data = extract_json(raw)
     if not data:
         return None
+
+    # The LLM may explicitly decline to summarise short / meaningless audio.
+    if data.get("discard") is True or str(data.get("discard", "")).strip().lower() in {"true", "1", "yes"}:
+        reason = str(data.get("discard_reason") or "").strip()[:200]
+        return CardDraft(
+            title="",
+            summary="",
+            discard=True,
+            discard_reason=reason or "AI 判断该音频没有总结价值",
+            source="llm",
+        )
 
     users = user_only(turns)
     user_text = "".join(t.text for t in users)
@@ -346,21 +463,56 @@ def summarize(
     turns: Sequence[Turn],
     *,
     occurred_at: datetime,
-    tz_name: str = "Asia/Shanghai",
+    tz_name: str | None = None,
     llm: Any = None,
     aliases: list[str] | None = None,
     profile: str = "",
 ) -> CardDraft:
-    """Produce a card draft, enforcing the identity constraint on both paths."""
+    """Produce a card draft, enforcing the identity constraint on both paths.
+
+    The returned draft may carry ``discard=True``, meaning the audio is too
+    short / meaningless to be worth a card; callers must not persist it.
+
+    Discard is decided by the LLM when available (``discard`` in its JSON
+    reply).  Requests that would throw away actionable or substantial content
+    are ignored, and a deterministic heuristic covers the no-LLM case.
+    """
     aliases = aliases or []
+    tz_name = tz_name or default_timezone()
+    settings = get_settings()
     rule_draft = _rule_extract(turns, occurred_at, tz_name)
-    if llm is not None:
-        llm_draft = _llm_extract(turns, occurred_at, tz_name, llm, aliases, profile)
-        if llm_draft is not None:
-            # Rule results are a floor: never lose schedule/todos that the
-            # deterministic extractor is confident about.
-            _merge_drafts(llm_draft, rule_draft)
+    llm_draft = _llm_extract(turns, occurred_at, tz_name, llm, aliases, profile) if llm is not None else None
+
+    if llm_draft is not None and llm_draft.discard:
+        if settings.summarizer_discard_enabled and not _llm_discard_blocked(turns, rule_draft):
+            logger.info(
+                "summarizer: AI discarded audio (%s chars): %s",
+                _meaningful_chars(turns),
+                llm_draft.discard_reason,
+            )
             return llm_draft
+        logger.info(
+            "summarizer: ignored AI discard request (%s); keeping the card", llm_draft.discard_reason
+        )
+        llm_draft = None
+
+    if llm_draft is not None:
+        # Rule results are a floor: never lose schedule/todos that the
+        # deterministic extractor is confident about.
+        _merge_drafts(llm_draft, rule_draft)
+        return llm_draft
+
+    reason = _rule_discard_reason(turns, rule_draft, settings)
+    if reason:
+        logger.info("summarizer: discarded low-value audio: %s", reason)
+        return CardDraft(
+            title="",
+            summary="",
+            card_type=rule_draft.card_type,
+            discard=True,
+            discard_reason=reason,
+            source="rule",
+        )
     return rule_draft
 
 

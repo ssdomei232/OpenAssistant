@@ -14,6 +14,10 @@ SupplementaryGroups=audio bluetooth
 EnvironmentFile=-/etc/openassistant/agent.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/openassistant/agent
+# 时区：Agent 启动时会按 agent.toml 的 timezone 设置 TZ 并 tzset，
+# 因此即使 systemd/宿主机是 UTC，recorded_at 与日志也会使用本地时区。
+# 如需让 systemd 层面也显式固定（journald 之外的工具可见），可取消下一行注释：
+# Environment=TZ=Asia/Shanghai
 StateDirectory=openassistant
 StateDirectoryMode=0750
 WorkingDirectory=/var/lib/openassistant

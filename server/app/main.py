@@ -13,7 +13,7 @@ from .api import api_router
 from .config import get_settings
 from .db import SessionLocal, init_db
 from .providers import build_providers, get_providers, set_providers
-from .security import ensure_bootstrap_user
+from .security import apply_configured_timezone, ensure_bootstrap_user
 from .services.jobs import BackgroundWorker
 from .services.scheduler import SchedulerService, set_scheduler
 
@@ -64,6 +64,11 @@ def create_app() -> FastAPI:
             user = ensure_bootstrap_user(db)
             if user is not None:
                 logger.info("bootstrap user ready: %s", user.display_name)
+            synced = apply_configured_timezone(db)
+            if synced:
+                logger.info(
+                    "OA_TIMEZONE=%s applied to %s existing user(s)", settings.timezone, synced
+                )
         providers = build_providers()
         set_providers(providers)
         logger.info("providers: %s", providers.describe())
